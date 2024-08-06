@@ -1,0 +1,54 @@
+[workspace]
+members = ["bridge", "net", "vhost", "."]
+resolver = "2"
+
+[workspace.dependencies]
+anyhow = "1.0.82"
+bitflags = "2.6.0"
+clap = { version = "4.5.4", features = ["derive"] }
+flume = { version = "0.11.0", default-features = false, features = [
+    "eventual-fairness",
+] }
+jiff = { version = "0.1.4", features = ["serde"] }
+mio = { version = "1.0.0", features = ["net", "os-poll", "os-ext"] }
+nix = { version = "0.29.0", features = [
+    "socket",
+    "uio",
+    "mman",
+    "ioctl",
+    "net",
+    "time",
+    "signal",
+    "pthread",
+    "term",
+    "process",
+    "fs",
+] }
+parking_lot = "0.12.2"
+rand = "0.8.5"
+serde = { version = "1.0.201", features = ["derive"] }
+thiserror = "1.0.59"
+tracing = "0.1.40"
+tracing-subscriber = "0.3.18"
+
+[package]
+name = "shadesmar"
+version = "0.1.0"
+edition = "2021"
+authors = ["Trike"]
+description = "A qemu/libvirt networking obfuscation driver"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+jiff = { workspace = true }
+names = { version = "0.14.0", default-features = false }
+serde = { workspace = true }
+shadesmar-bridge = { path = "bridge" }
+shadesmar-net = { path = "net" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+mio = { workspace = true }
+nix = { workspace = true }

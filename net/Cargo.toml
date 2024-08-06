@@ -1,0 +1,15 @@
+[package]
+name = "shadesmar-net"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitflags = { workspace = true }
+nix = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }

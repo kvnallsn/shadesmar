@@ -1,0 +1,505 @@
+//! Simple L3 Router
+
+pub mod handler;
+
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
+
+use flume::{Receiver, Sender};
+use serde::{Deserialize, Serialize};
+use shadesmar_net::{
+    protocols::ArpPacket,
+    types::{EtherType, Ipv4Network, MacAddress},
+    EthernetFrame, EthernetPacket, Ipv4Packet, ProtocolError, Switch, SwitchPort,
+};
+
+pub use crate::net::{
+    switch::VirtioSwitch,
+    wan::{Wan, WanHandle},
+};
+
+use self::handler::ProtocolHandler;
+
+use super::NetworkError;
+
+const IPV4_HDR_SZ: usize = 20;
+
+/// Message that is sent over the router's channel to queue a packet
+/// to be processed/routed
+pub enum RouterMsg {
+    /// Queues a packet received over a LAN port from a local device
+    FromLan(EthernetPacket),
+
+    /// Queues a packet received from the WAN port
+    FromWan4(Ipv4Packet),
+}
+
+/// The action a router will take after processing a packet
+pub enum RouterAction {
+    /// Queues a packet to be sent over a LAN port to a local device
+    ToLan(EtherType, IpAddr, Vec<u8>),
+
+    /// Queues a packet to be send over the WAN port
+    ToWan(Ipv4Packet),
+
+    /// Drops / ignores the packet (no response generated)
+    Drop(Vec<u8>),
+}
+
+/// Provides a means of queueing packets to be processed by a `Router`
+#[derive(Clone)]
+pub struct RouterHandle {
+    /// Transmit side of the (mpsc) router channel
+    tx: Sender<RouterMsg>,
+
+    /// MAC address of the router
+    mac: MacAddress,
+
+    /// Network for which the router is responsible
+    network: Ipv4Network,
+
+    /// Type of WAN connected to router
+    wan_type: Option<String>,
+
+    /// Total traffic sent over the WAN connection
+    wan_traffic_tx: Arc<AtomicU64>,
+
+    /// Total traffic received over the WAN connection
+    wan_traffic_rx: Arc<AtomicU64>,
+}
+
+/// A Layer 3 IPv4 Router
+pub struct Router {
+    /// Map of IP address (L3) to their corresponding MAC (L2) address
+    arp: HashMap<IpAddr, MacAddress>,
+
+    /// Switching fabric used to communicate with connected devices
+    switch: VirtioSwitch,
+
+    /// Port on the switch to which this router is assigned
+    port: usize,
+
+    /// Optional WAN (upstream) connection to forward non-local packets
+    wan: Option<Box<dyn WanHandle>>,
+
+    /// MAC address of this router
+    mac: MacAddress,
+
+    /// IPv4 network this router for which this router is responsible
+    network: Ipv4Network,
+
+    /// Layer 4 protocol handlers to handle packets destined for this router
+    ip4_handlers: HashMap<u8, Box<dyn ProtocolHandler>>,
+
+    /// Total traffic sent over the WAN connection
+    wan_traffic_tx: Arc<AtomicU64>,
+
+    /// Total traffic received over the WAN connection
+    wan_traffic_rx: Arc<AtomicU64>,
+}
+
+/// A `RouteBuilder` provides convenience methods for building routers
+#[derive(Default)]
+pub struct RouterBuilder {
+    /// Mapping of ipv4 protocol numbers to a handler to run when a packet
+    /// matching the protocol is received
+    ip4_handlers: HashMap<u8, Box<dyn ProtocolHandler>>,
+
+    /// Wide Area Network (WAN) connection
+    wan: Option<Box<dyn Wan>>,
+}
+
+/// Contains the status of the router, when requested by a control message
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RouterStatus {
+    pub mac: MacAddress,
+    pub network: Ipv4Network,
+    pub wan_type: Option<String>,
+    pub wan_traffic_rx: u64,
+    pub wan_traffic_tx: u64,
+}
+
+#[allow(dead_code)]
+impl RouterBuilder {
+    /// Connects a WAN device to the WAN port on the router
+    ///
+    /// The WAN device will handle all unknown/non-local packets process
+    /// by the router.  A non-local packet is any packet that's destination
+    /// IP address does not reside inside the router's subnet / network.
+    ///
+    /// ### Arguments
+    /// * `wan` - Optional WAN device / connection
+    pub fn wan(mut self, wan: Option<Box<dyn Wan>>) -> Self {
+        self.wan = wan;
+        self
+    }
+
+    /// Adds a (layer-4) protocol handler for this router
+    ///
+    /// A protocol handler provides a way to dynamically handle various layer 4 (i.e., tcp/udp/icmp)
+    /// are seen by this router.
+    ///
+    /// ### Arguments
+    /// * `handler` - The handler to call when the layer 4 protocol is encountered
+    pub fn register_l4_proto_handler<P: ProtocolHandler + 'static>(mut self, handler: P) -> Self {
+        let proto = handler.protocol();
+        self.ip4_handlers.insert(proto, Box::new(handler));
+        self
+    }
+
+    /// Create the router, spawning a new thread to run the core logic
+    ///
+    /// ### Arguments
+    /// * `network` - Network address and subnet mask
+    pub fn spawn(
+        self,
+        network: Ipv4Network,
+        switch: VirtioSwitch,
+    ) -> std::io::Result<RouterHandle> {
+        let (tx, rx) = flume::unbounded();
+
+        let wan_traffic_tx = Arc::new(AtomicU64::new(0));
+        let wan_traffic_rx = Arc::new(AtomicU64::new(0));
+
+        let mac = MacAddress::generate();
+        let handle = RouterHandle {
+            tx,
+            mac,
+            network,
+            wan_type: self.wan.as_ref().map(|wan| wan.desc()),
+            wan_traffic_tx: Arc::clone(&wan_traffic_tx),
+            wan_traffic_rx: Arc::clone(&wan_traffic_rx),
+        };
+        let port = switch.connect(handle.clone());
+
+        let wan = self.wan.and_then(|wan| match wan.spawn(handle.clone()) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                tracing::warn!(?error, "unable to start wan");
+                None
+            }
+        });
+
+        let router = Router {
+            arp: HashMap::new(),
+            switch,
+            port,
+            wan,
+            mac,
+            network,
+            ip4_handlers: self.ip4_handlers,
+            wan_traffic_tx,
+            wan_traffic_rx,
+        };
+
+        std::thread::Builder::new()
+            .name(String::from("router"))
+            .spawn(move || router.run(rx))?;
+
+        Ok(handle)
+    }
+}
+
+impl Router {
+    /// Returns a default `RouterBuilder`
+    pub fn builder() -> RouterBuilder {
+        RouterBuilder::default()
+    }
+
+    /// Runs the router
+    ///
+    /// Continuously listens for messages from the LAN/WAN ports and forwards
+    /// them as appropriate to their intended destinations
+    ///
+    /// ### Arguments
+    /// * `rx` - Receive side of the router message channel of which packets will be received
+    pub fn run(mut self, rx: Receiver<RouterMsg>) {
+        loop {
+            match rx.recv() {
+                Ok(RouterMsg::FromLan(pkt)) => match self.route(pkt) {
+                    Ok(_) => (),
+                    Err(error) => tracing::warn!(?error, "unable to route lan packet"),
+                },
+                Ok(RouterMsg::FromWan4(pkt)) => {
+                    self.wan_traffic_rx
+                        .fetch_add(pkt.len() as u64, Ordering::Relaxed);
+
+                    if let Err(error) = self
+                        .route_ip4(pkt)
+                        .and_then(|action| self.handle_action(action, None))
+                    {
+                        tracing::warn!(?error, "unable to route wan packet");
+                    }
+                }
+                Err(error) => {
+                    tracing::error!(?error, "unable to receive packet");
+                    break;
+                }
+            }
+        }
+
+        tracing::info!("router died");
+    }
+
+    /// Routes a packet based on it's packet type
+    ///
+    /// ### Arguments
+    /// * `ethertype` - What type of data is contained in the packet
+    /// * `pkt` - Packet data (based on ethertype)
+    fn route(&mut self, pkt: EthernetPacket) -> Result<(), ProtocolError> {
+        let action = match pkt.frame.ethertype {
+            EtherType::ARP => self.handle_arp(pkt.payload),
+            EtherType::IPv4 => {
+                let pkt = Ipv4Packet::parse(pkt.payload)?;
+                self.route_ip4(pkt)
+            }
+            EtherType::IPv6 => self.route_ip6(pkt.payload),
+        }?;
+
+        self.handle_action(action, Some(pkt.frame.src))
+    }
+
+    /// Converts a `RouterAction` into an appropriate on-network response
+    ///
+    /// ### Arguments
+    /// * `action` - The router action from which to build (or not build) a network packet
+    /// * `dst` - The destination MAC address, if known
+    fn handle_action(
+        &mut self,
+        action: RouterAction,
+        dst: Option<MacAddress>,
+    ) -> Result<(), ProtocolError> {
+        match action {
+            RouterAction::ToLan(ethertype, dst_ip, pkt) => {
+                let dst = dst.or_else(|| self.arp.get(&dst_ip).copied());
+
+                match dst {
+                    Some(dst) => self.write_to_switch(dst, ethertype, pkt),
+                    None => {
+                        tracing::warn!(ip = ?dst_ip, "[router] mac not found in arp cache, dropping packet")
+                    }
+                }
+            }
+            RouterAction::ToWan(pkt) => match self.forward_packet(pkt) {
+                Ok(_) => tracing::trace!("[router] forwarded packet"),
+                Err(error) => tracing::warn!(?error, "[router] unable to forward packet"),
+            },
+            RouterAction::Drop(_pkt) => tracing::debug!("[router] dropping packet"),
+        }
+
+        Ok(())
+    }
+
+    /// Returns true if a packet is destined for this local device or if
+    /// the it is a broadcast packet
+    fn is_local<A: Into<IpAddr>>(&self, dst: A) -> bool {
+        match dst.into() {
+            IpAddr::V4(ip) => self.network == ip,
+            IpAddr::V6(_ip) => false,
+        }
+    }
+
+    // Returns true if the IP is the global broadcast IP
+    fn is_global_broadcast(&self, ip: IpAddr) -> bool {
+        match ip {
+            IpAddr::V4(ip) => ip.is_broadcast(),
+            IpAddr::V6(_ip) => false,
+        }
+    }
+
+    /// Handles an ARP packet sent to this router's IPv4 address
+    ///
+    /// ### Arguments
+    /// * `pkt` - Byte buffer containing the ARP packet starting at index 0
+    fn handle_arp(&mut self, pkt: Vec<u8>) -> Result<RouterAction, ProtocolError> {
+        tracing::trace!("handling arp packet");
+        let mut arp = ArpPacket::parse(&pkt)?;
+
+        tracing::trace!(
+            "[router] associating mac to ip: {:?} -> {}",
+            arp.spa,
+            arp.sha
+        );
+        self.arp.insert(arp.spa, arp.sha);
+
+        if self.is_local(arp.tpa) || self.is_global_broadcast(arp.tpa) {
+            // responsd with router's mac
+            let mut rpkt = vec![0u8; arp.size()];
+            arp.to_reply(self.mac);
+            arp.as_bytes(&mut rpkt);
+            Ok(RouterAction::ToLan(EtherType::ARP, arp.tpa, rpkt))
+        } else {
+            // Not for us..ignore the packet
+            Ok(RouterAction::Drop(pkt))
+        }
+    }
+
+    /// Forwards this packet over the WAN connection
+    ///
+    /// If no WAN device is registered, drops the packet
+    ///
+    /// ### Arguments
+    /// * `pkt` - A layer 3 (IPv4) packet to write to the ether
+    fn forward_packet(&mut self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
+        if let Some(ref wan) = self.wan {
+            self.wan_traffic_tx
+                .fetch_add(pkt.len() as u64, Ordering::Relaxed);
+
+            if let Err(error) = wan.write(pkt) {
+                tracing::warn!(?error, "unable to write to wan, dropping packet");
+            }
+        } else {
+            tracing::warn!("[router] no wan device, dropping packet");
+        }
+        Ok(())
+    }
+
+    /// Routes an IPv4 packet to the appropriate destination
+    ///
+    /// Checks to see if the destination is local (aka in the router's subnet) or if
+    /// the packet needs to be forwarded over the WAN connection.
+    ///
+    /// If the destination can be handled by the router, checks to see if the destination
+    /// is the router's IP, and if so, responds to the packet.  If not, queues the packet
+    /// to be sent out a LAN port.
+    ///
+    /// ### Arguments
+    /// * `pkt` - The IPv4 packet received by the router
+    fn route_ip4(&mut self, pkt: Ipv4Packet) -> Result<RouterAction, ProtocolError> {
+        match self.network.contains(pkt.dest()) || pkt.dest().is_broadcast() {
+            true => match self.is_local(pkt.dest()) || pkt.dest().is_broadcast() {
+                true => Ok(self.handle_local_ipv4(pkt)),
+                false => {
+                    let dst = pkt.dest();
+                    Ok(RouterAction::ToLan(
+                        EtherType::IPv4,
+                        IpAddr::V4(dst),
+                        pkt.into_bytes(),
+                    ))
+                }
+            },
+            false => Ok(RouterAction::ToWan(pkt)),
+        }
+    }
+
+    /// Routes an IPv6 packet...or not because IPv6 is not current supported
+    ///
+    /// All packets are dropped
+    ///
+    /// ### Arguments
+    /// * `pkt` -  The (unsupported) IPv6 packet
+    fn route_ip6(&self, pkt: Vec<u8>) -> Result<RouterAction, ProtocolError> {
+        tracing::debug!("ipv6 not supported, dropping packet");
+        Ok(RouterAction::Drop(pkt))
+    }
+
+    /// Handles an IPv4 packet with a destination IP of this router
+    ///
+    /// This function calls the pre-registered L4 protocol handlers assigned
+    /// by the `RouterBuilder`.
+    ///
+    /// If a specific protocol does not have a handler, the packet is dropped.
+    ///
+    /// ### Arguments
+    /// * `pkt` - The IPv4 packet received over the wire/air/string
+    fn handle_local_ipv4(&mut self, pkt: Ipv4Packet) -> RouterAction {
+        let mut rpkt = vec![0u8; 1560];
+
+        match self.ip4_handlers.get_mut(&pkt.protocol()) {
+            Some(ref mut handler) => {
+                match handler.handle_protocol(&pkt, &mut rpkt[IPV4_HDR_SZ..]) {
+                    Ok(0) => RouterAction::Drop(Vec::new()),
+                    Ok(sz) => {
+                        rpkt.truncate(IPV4_HDR_SZ + sz);
+
+                        // build response ipv4 header
+                        let hdr = pkt.reply(&rpkt[IPV4_HDR_SZ..]);
+                        hdr.as_bytes(&mut rpkt[0..IPV4_HDR_SZ]);
+
+                        RouterAction::ToLan(EtherType::IPv4, hdr.dst.into(), rpkt)
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            ?error,
+                            protocol = pkt.protocol(),
+                            "unable to handle packet"
+                        );
+                        RouterAction::Drop(Vec::new())
+                    }
+                }
+            }
+            None => RouterAction::Drop(vec![]),
+        }
+    }
+
+    /// Writes a packet to the local switching fabric (i.e., local lan)
+    ///
+    /// ### Arguments
+    /// * `dst` - Destination MAC address
+    /// * `ethertype` - Type of packet to write (i.e., 0x0800 (IPv4), 0x0806 (ARP))
+    /// * `pkt` - Layer 3 (i.e., IP) packet contents / data
+    fn write_to_switch(&self, dst: MacAddress, ethertype: EtherType, mut pkt: Vec<u8>) {
+        let mut data = Vec::with_capacity(14 + pkt.len());
+        data.extend_from_slice(&dst.as_bytes());
+        data.extend_from_slice(&self.mac.as_bytes());
+        data.extend_from_slice(&ethertype.as_u16().to_be_bytes());
+        data.append(&mut pkt);
+
+        tracing::trace!("[router] write to switch: {:02x?}", &data[14..34]);
+
+        if let Err(error) = self.switch.process(self.port, data) {
+            tracing::warn!(?error, "unable to write to switch");
+        }
+    }
+}
+
+impl RouterHandle {
+    /// Queues an IPv4 packet to be routed
+    ///
+    /// ### Arguments
+    /// * `pkt` - IPv4 packet to route
+    pub fn route_ipv4(&self, pkt: Ipv4Packet) {
+        self.tx.send(RouterMsg::FromWan4(pkt)).ok();
+    }
+
+    /// Queues an IPv6 packet to be routed
+    ///
+    /// ### Arguments
+    /// * `pkt` - IPv6 packet to route
+    pub fn route_ipv6(&self, _pkt: Vec<u8>) {
+        tracing::warn!("[router] no ipv6 support");
+    }
+
+    /// Returns the MAC address of the router
+    pub fn mac(&self) -> MacAddress {
+        self.mac
+    }
+
+    /// Returns the status of the router
+    pub fn status(&self) -> RouterStatus {
+        RouterStatus {
+            mac: self.mac,
+            network: self.network,
+            wan_type: self.wan_type.clone(),
+            wan_traffic_rx: self.wan_traffic_rx.load(Ordering::Relaxed),
+            wan_traffic_tx: self.wan_traffic_tx.load(Ordering::Relaxed),
+        }
+    }
+}
+
+impl SwitchPort for RouterHandle {
+    fn desc(&self) -> &'static str {
+        "router"
+    }
+
+    fn enqueue(&self, frame: EthernetFrame, pkt: Vec<u8>) {
+        let pkt = EthernetPacket::new(frame, pkt);
+        self.tx.send(RouterMsg::FromLan(pkt)).ok();
+    }
+}
