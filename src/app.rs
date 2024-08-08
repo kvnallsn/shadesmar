@@ -186,8 +186,9 @@ impl App {
 
         let mut src = File::open(config).context("unable to open source configuration file")?;
         let mut dst = File::options()
-            .create_new(true)
+            .create(true)
             .write(true)
+            .truncate(true)
             .open(network.cfg_file())
             .context("unable to open destination configuration file")?;
 
