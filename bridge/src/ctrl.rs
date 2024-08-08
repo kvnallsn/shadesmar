@@ -31,14 +31,25 @@ pub struct CtrlServerStream(mio::net::UnixStream);
 
 #[derive(Debug, Deserialize, Serialize)]
 pub enum CtrlRequest {
+    /// Requests the network cleanly terminate and release resources
     Stop,
+
+    /// Connects a network tap to the switch for netflow/pcap
     ConnectTap(PathBuf),
+
+    /// Generates a status response on the health of the network
     Status,
+
+    /// Requests a pong response to check if network is alive
+    Ping,
 }
 
 /// Represents a response from the server to a client
 #[derive(Debug, Deserialize, Serialize)]
 pub enum CtrlResponse {
+    /// Empty response to signal network is still alive
+    Pong,
+
     /// Returns the status of the switch
     Status(SwitchStatus, RouterStatus),
 }

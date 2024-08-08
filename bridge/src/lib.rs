@@ -21,7 +21,6 @@ use shadesmar_vhost::{DeviceOpts, VHostSocket};
 pub use self::config::Config as BridgeConfig;
 
 use crate::{
-    config::WanConfig,
     ctrl::{CtrlRequest, CtrlServerStream, CtrlSocket},
     error::Error,
     net::{
@@ -31,7 +30,6 @@ use crate::{
             Router,
         },
         switch::VirtioSwitch,
-        wan::{TunTap, UdpDevice, Wan, WgDevice},
     },
 };
 
@@ -99,23 +97,6 @@ impl BridgeBuilder {
             pcap: self.pcap,
             cfg,
         })
-    }
-}
-
-fn parse_wan(cfg: &WanConfig) -> Result<Option<Box<dyn Wan>>, Error> {
-    match cfg {
-        WanConfig::Tap(opts) => {
-            let wan = TunTap::create_tap(&opts.device)?;
-            Ok(Some(Box::new(wan)))
-        }
-        WanConfig::Udp(opts) => {
-            let wan = UdpDevice::connect(opts.endpoint)?;
-            Ok(Some(Box::new(wan)))
-        }
-        WanConfig::Wireguard(opts) => {
-            let wan = WgDevice::create(opts)?;
-            Ok(Some(Box::new(wan)))
-        }
     }
 }
 
@@ -192,7 +173,7 @@ impl Bridge {
         let switch = VirtioSwitch::new(self.pcap.take())?;
 
         // spawn the default route / upstream
-        let wan = parse_wan(&self.cfg.wan)?;
+        //let wan = parse_wan(&self.cfg.wan)?;
 
         let mut udp_handler = UdpHandler::default();
         udp_handler
@@ -200,7 +181,8 @@ impl Bridge {
 
         // spawn thread to receive messages/packets
         let router = Router::builder()
-            .wan(wan)
+            .register_wans(&self.cfg.wan)?
+            .routing_table(self.cfg.router.table.clone())
             .register_l4_proto_handler(IcmpHandler::default())
             .register_l4_proto_handler(udp_handler)
             .spawn(self.cfg.router.ipv4, switch.clone())?;
@@ -330,6 +312,9 @@ impl Bridge {
                     let router_status = router.status();
 
                     strm.send(CtrlResponse::Status(switch_status, router_status))?;
+                }
+                CtrlRequest::Ping => {
+                    strm.send(CtrlResponse::Pong)?;
                 }
             }
         }

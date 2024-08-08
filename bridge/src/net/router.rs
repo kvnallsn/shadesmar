@@ -4,7 +4,7 @@ pub mod handler;
 
 use std::{
     collections::HashMap,
-    net::IpAddr,
+    net::{IpAddr, Ipv4Addr},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -12,6 +12,7 @@ use std::{
 };
 
 use flume::{Receiver, Sender};
+use ip_network_table_deps_treebitmap::IpLookupTable;
 use serde::{Deserialize, Serialize};
 use shadesmar_net::{
     protocols::ArpPacket,
@@ -19,6 +20,7 @@ use shadesmar_net::{
     EthernetFrame, EthernetPacket, Ipv4Packet, ProtocolError, Switch, SwitchPort,
 };
 
+use crate::config::WanConfig;
 pub use crate::net::{
     switch::VirtioSwitch,
     wan::{Wan, WanHandle},
@@ -26,7 +28,12 @@ pub use crate::net::{
 
 use self::handler::ProtocolHandler;
 
-use super::NetworkError;
+use super::{
+    wan::{TunTap, UdpDevice, WgDevice},
+    NetworkError,
+};
+
+pub type RouteTable = IpLookupTable<Ipv4Addr, usize>;
 
 const IPV4_HDR_SZ: usize = 20;
 
@@ -86,7 +93,10 @@ pub struct Router {
     port: usize,
 
     /// Optional WAN (upstream) connection to forward non-local packets
-    wan: Option<Box<dyn WanHandle>>,
+    wans: Vec<Box<dyn WanHandle>>,
+
+    /// WAN routing table, maps IPv4 cidrs to wan index
+    table: RouteTable,
 
     /// MAC address of this router
     mac: MacAddress,
@@ -111,8 +121,11 @@ pub struct RouterBuilder {
     /// matching the protocol is received
     ip4_handlers: HashMap<u8, Box<dyn ProtocolHandler>>,
 
-    /// Wide Area Network (WAN) connection
-    wan: Option<Box<dyn Wan>>,
+    /// Wide Area Network (WAN) connections
+    wans: Vec<Box<dyn Wan>>,
+
+    /// WAN routing table, maps IPv4 cidrs to wan index
+    table: HashMap<Ipv4Network, usize>,
 }
 
 /// Contains the status of the router, when requested by a control message
@@ -127,16 +140,48 @@ pub struct RouterStatus {
 
 #[allow(dead_code)]
 impl RouterBuilder {
-    /// Connects a WAN device to the WAN port on the router
+    /// Registers a series of WAN configurations with this router
     ///
     /// The WAN device will handle all unknown/non-local packets process
     /// by the router.  A non-local packet is any packet that's destination
     /// IP address does not reside inside the router's subnet / network.
     ///
     /// ### Arguments
-    /// * `wan` - Optional WAN device / connection
-    pub fn wan(mut self, wan: Option<Box<dyn Wan>>) -> Self {
-        self.wan = wan;
+    /// * `wans` - Upstream providers for unknown/non-local packets
+    pub fn register_wans(mut self, wans: &[WanConfig]) -> Result<Self, NetworkError> {
+        let parse_wan = |cfg: &WanConfig| match cfg {
+            WanConfig::Tap(opts) => {
+                let wan = TunTap::create_tap(&opts.device)?;
+                Ok::<Box<dyn Wan>, NetworkError>(Box::new(wan) as Box<dyn Wan>)
+            }
+            WanConfig::Udp(opts) => {
+                let wan = UdpDevice::connect(opts.endpoint)?;
+                Ok(Box::new(wan) as Box<dyn Wan>)
+            }
+            WanConfig::Wireguard(opts) => {
+                let wan = WgDevice::create(opts)?;
+                Ok(Box::new(wan) as Box<dyn Wan>)
+            }
+        };
+
+        for wan in wans {
+            let wan = parse_wan(wan)?;
+            self.wans.push(wan);
+        }
+
+        Ok(self)
+    }
+
+    /// Install a new routing table for WAN connections
+    ///
+    /// The routing table maps IPv4 addresses and networks (CIDRs) to indexs in the WAN
+    /// array/vector.  If an entry is not found, then the default (0) WAN connection
+    /// is used.
+    ///
+    /// ### Arguments
+    /// * `table` - Map of IPv4 networks (CIDRs) to WAN index
+    pub fn routing_table(mut self, table: HashMap<Ipv4Network, usize>) -> Self {
+        self.table = table;
         self
     }
 
@@ -161,7 +206,7 @@ impl RouterBuilder {
         self,
         network: Ipv4Network,
         switch: VirtioSwitch,
-    ) -> std::io::Result<RouterHandle> {
+    ) -> Result<RouterHandle, NetworkError> {
         let (tx, rx) = flume::unbounded();
 
         let wan_traffic_tx = Arc::new(AtomicU64::new(0));
@@ -172,25 +217,31 @@ impl RouterBuilder {
             tx,
             mac,
             network,
-            wan_type: self.wan.as_ref().map(|wan| wan.desc()),
+            wan_type: None,
             wan_traffic_tx: Arc::clone(&wan_traffic_tx),
             wan_traffic_rx: Arc::clone(&wan_traffic_rx),
         };
         let port = switch.connect(handle.clone());
 
-        let wan = self.wan.and_then(|wan| match wan.spawn(handle.clone()) {
-            Ok(handle) => Some(handle),
-            Err(error) => {
-                tracing::warn!(?error, "unable to start wan");
-                None
-            }
-        });
+        let mut wans = Vec::with_capacity(self.wans.len());
+        for wan in self.wans {
+            let wan_handle = wan.spawn(handle.clone())?;
+            wans.push(wan_handle);
+        }
+
+        let mut table = IpLookupTable::new();
+        table.insert(Ipv4Addr::from(0), 0, 0); // default route
+        for (ipnet, wan_idx) in self.table {
+            tracing::debug!("adding route to {ipnet} via {wan_idx}");
+            table.insert(ipnet.ip(), u32::from(ipnet.subnet_mask_bits()), wan_idx);
+        }
 
         let router = Router {
             arp: HashMap::new(),
             switch,
             port,
-            wan,
+            wans,
+            table,
             mac,
             network,
             ip4_handlers: self.ip4_handlers,
@@ -347,7 +398,15 @@ impl Router {
     /// ### Arguments
     /// * `pkt` - A layer 3 (IPv4) packet to write to the ether
     fn forward_packet(&mut self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
-        if let Some(ref wan) = self.wan {
+        let wan_idx = self
+            .table
+            .longest_match(pkt.dest())
+            .map(|(_, _, idx)| *idx)
+            .unwrap_or(0);
+
+        tracing::debug!("routing packet with dest {} over wan {wan_idx}", pkt.dest());
+
+        if let Some(ref wan) = self.wans.get(wan_idx) {
             self.wan_traffic_tx
                 .fetch_add(pkt.len() as u64, Ordering::Relaxed);
 
@@ -355,8 +414,9 @@ impl Router {
                 tracing::warn!(?error, "unable to write to wan, dropping packet");
             }
         } else {
-            tracing::warn!("[router] no wan device, dropping packet");
+            tracing::warn!("[router] no wan device with index {wan_idx}, dropping packet");
         }
+
         Ok(())
     }
 

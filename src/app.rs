@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::Context;
+use dialoguer::{theme::Theme, Confirm};
 use pcap::handle_pcap;
 use shadesmar_bridge::{
     ctrl::{CtrlClientStream, CtrlRequest, CtrlResponse},
@@ -44,13 +45,15 @@ macro_rules! human_bytes {
 }
 
 /// Internal application state
-#[derive(Debug)]
 pub struct App {
     /// Path to the configuration directory
     cfg_dir: PathBuf,
 
     /// Path to the run directory
     run_dir: PathBuf,
+
+    /// Theme to use for input prompts
+    theme: Box<dyn Theme>,
 }
 
 /// Represents a network
@@ -95,13 +98,20 @@ impl App {
             ));
         }
 
-        Ok(Self { cfg_dir, run_dir })
+        let theme = Box::new(dialoguer::theme::ColorfulTheme::default());
+
+        Ok(Self {
+            cfg_dir,
+            run_dir,
+            theme,
+        })
     }
 
     /// Runs the application
     pub fn run(self, cmd: Command) -> anyhow::Result<()> {
         match cmd {
             Command::Install { config } => self.install(config, None)?,
+            Command::Uninstall { network, purge } => self.uninstall(network, purge)?,
             Command::Start { network } => self.start(network)?,
             Command::Status { network } => self.status(network)?,
             Command::Netflow { network } => self.pcap(network)?,
@@ -128,6 +138,20 @@ impl App {
         })
     }
 
+    /// Shows a confirmation (yes / no) prompt using the app's theme
+    ///
+    /// Returns:
+    /// - true if the user confirmed the prompt (aka yes)
+    /// - false if the user denied the prompt (aka no)
+    /// - error if anything else happens
+    fn prompt_confirm<S: Into<String>>(&self, msg: S) -> anyhow::Result<bool> {
+        let confirmation = Confirm::with_theme(&*self.theme)
+            .with_prompt(msg)
+            .interact()?;
+
+        Ok(confirmation)
+    }
+
     /// Installs a shadesmar network configuration file
     ///
     /// # Arguments
@@ -152,6 +176,14 @@ impl App {
             network.name(),
         );
 
+        if network.cfg_file().exists() {
+            // Prompt to overwrite
+            if !self.prompt_confirm("Overwrite existing network file?")? {
+                println!("operation cancelled");
+                return Ok(());
+            }
+        }
+
         let mut src = File::open(config).context("unable to open source configuration file")?;
         let mut dst = File::options()
             .create_new(true)
@@ -160,6 +192,41 @@ impl App {
             .context("unable to open destination configuration file")?;
 
         std::io::copy(&mut src, &mut dst)?;
+
+        Ok(())
+    }
+
+    /// Uninstalls a network configuration file
+    ///
+    /// If the purge option is specificed, this will also remove any files
+    /// located in the runtime directory (e.g. /var/run/shadesmar/<network>/)
+    ///
+    /// ### Arguments
+    /// * `network` - Name of network to uninstall
+    /// * `purge` - Delete any/all runtime generated files
+    fn uninstall(self, network: String, purge: bool) -> anyhow::Result<()> {
+        let network = self
+            .open_network(network)
+            .context("unable to open network")?;
+
+        if network
+            .ctrl_socket()
+            .and_then(|mut sock| {
+                sock.send(CtrlRequest::Ping)
+                    .map_err(|e| anyhow::Error::from(e))
+            })
+            .is_ok()
+        {
+            eprintln!("network is running, please stop if first");
+            return Ok(());
+        }
+
+        tracing::info!(file = %network.cfg_file().display(), "uninstalling network configuration file");
+        std::fs::remove_file(network.cfg_file()).ok();
+        if purge {
+            tracing::info!(dir = %network.run_dir().display(), "purging runtime files");
+            std::fs::remove_dir_all(network.run_dir()).ok();
+        }
 
         Ok(())
     }
@@ -242,7 +309,7 @@ impl App {
                 }
                 println!("-------------------------------------------");
             }
-            //Some(_) => tracing::warn!("requested, status, received non-status response"),
+            Some(_) => tracing::warn!("requested, status, received non-status response"),
             None => tracing::warn!("requested status, did not receive a response"),
         }
 

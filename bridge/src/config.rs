@@ -2,16 +2,22 @@
 
 pub(crate) mod dhcp;
 
-use std::{fs::File, io, net::SocketAddr, path::Path};
+use std::{collections::HashMap, fs::File, io, net::SocketAddr, path::Path};
 
 use serde::{Deserialize, Serialize};
 use shadesmar_net::types::Ipv4Network;
 
 use crate::{config::dhcp::DhcpConfig, net::wan::WgConfig};
 
+/// Shadesmar network configuration
+///
+/// A network config consists of three main sections:
+/// - wan: The various upstream / wide area network connections
+/// - router: Various router configuration settings
+/// - virtio: Virtio configuration settings
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
-    pub wan: WanConfig,
+    pub wan: Vec<WanConfig>,
     pub router: RouterConfig,
     pub virtio: VirtioConfig,
 }
@@ -39,6 +45,7 @@ pub struct RouterConfig {
     pub ipv4: Ipv4Network,
     pub dhcp: DhcpConfig,
     pub dns: bool,
+    pub table: HashMap<Ipv4Network, usize>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

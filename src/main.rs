@@ -29,6 +29,16 @@ pub enum Command {
         config: PathBuf,
     },
 
+    /// Uninstalls (optionally purges) a network configuration
+    Uninstall {
+        /// Name of network to uninstall
+        network: String,
+
+        /// Delete runtime files (sockets, pcap, etc.)
+        #[clap(long)]
+        purge: bool,
+    },
+
     /// Starts an shadesmar network
     Start {
         /// Name of network to start
