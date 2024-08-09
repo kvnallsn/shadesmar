@@ -11,12 +11,13 @@ use shadesmar_net::Ipv4Packet;
 
 use crate::net::{router::RouterHandle, NetworkError};
 
-use super::{Wan, WanHandle};
+use super::{Wan, WanHandle, WanStats};
 
 pub struct UdpDevice {
     name: String,
     sock: UdpSocket,
     dests: Vec<SocketAddr>,
+    stats: WanStats,
 }
 
 pub struct UdpDeviceHandle {
@@ -29,7 +30,13 @@ impl UdpDevice {
         let name = name.into();
         let sock = UdpSocket::bind("0.0.0.0:0")?;
         let dests = addrs.to_socket_addrs()?.collect::<Vec<_>>();
-        Ok(Self { name, sock, dests })
+        let stats = WanStats::new("UDP");
+        Ok(Self {
+            name,
+            sock,
+            dests,
+            stats,
+        })
     }
 }
 
@@ -41,8 +48,8 @@ where
         self.name.as_str()
     }
 
-    fn desc(&self) -> String {
-        String::from("UDP")
+    fn stats(&self) -> WanStats {
+        self.stats.clone()
     }
 
     fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError> {

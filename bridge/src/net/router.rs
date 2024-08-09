@@ -12,7 +12,7 @@ use shadesmar_net::{
     types::{EtherType, Ipv4Network, MacAddress},
     EthernetFrame, EthernetPacket, Ipv4Packet, ProtocolError, Switch, SwitchPort,
 };
-use table::{ArcRouteTable, RouteStats, RouteTable};
+use table::{ArcRouteTable, RouteTable};
 
 use crate::config::{WanConfig, WanDevice};
 pub use crate::net::{
@@ -23,7 +23,7 @@ pub use crate::net::{
 use self::handler::ProtocolHandler;
 
 use super::{
-    wan::{TunTap, UdpDevice, WgDevice},
+    wan::{TunTap, UdpDevice, WanStats, WgDevice},
     NetworkError,
 };
 
@@ -68,6 +68,9 @@ pub struct RouterHandle {
 
     /// Type of WAN connected to router
     wan_type: Option<String>,
+
+    /// Information about each registered WAN connection
+    wan_stats: HashMap<String, WanStats>,
 }
 
 /// A Layer 3 IPv4 Router
@@ -117,7 +120,7 @@ pub struct RouterStatus {
     pub mac: MacAddress,
     pub network: Ipv4Network,
     pub route_table: HashMap<Ipv4Network, String>,
-    pub wan_stats: HashMap<String, RouteStats>,
+    pub wan_stats: HashMap<String, (String, u64, u64)>,
     pub wan_type: Option<String>,
 }
 
@@ -195,6 +198,12 @@ impl RouterBuilder {
         let table = RouteTable::new(self.table, &self.wans);
         let route_table = Arc::clone(&table);
 
+        let wan_stats = self
+            .wans
+            .iter()
+            .map(|wan| (wan.name().to_owned(), wan.stats()))
+            .collect::<HashMap<String, WanStats>>();
+
         let mac = MacAddress::generate();
         let handle = RouterHandle {
             tx,
@@ -202,6 +211,7 @@ impl RouterBuilder {
             route_table,
             network,
             wan_type: None,
+            wan_stats,
         };
         let port = switch.connect(handle.clone());
 
@@ -377,8 +387,6 @@ impl Router {
         tracing::debug!("routing packet with dest {} over wan {wan_idx}", pkt.dest());
 
         if let Some(ref wan) = self.wans.get(wan_idx) {
-            self.table.update_stats(wan_idx, pkt.len(), 0usize);
-
             if let Err(error) = wan.write(pkt) {
                 tracing::warn!(?error, "unable to write to wan, dropping packet");
             }
@@ -512,12 +520,23 @@ impl RouterHandle {
 
     /// Returns the status of the router
     pub fn status(&self) -> RouterStatus {
+        let wan_stats = self
+            .wan_stats
+            .iter()
+            .map(|(name, stats)| {
+                (
+                    name.to_owned(),
+                    (stats.wan_type().to_owned(), stats.tx(), stats.rx()),
+                )
+            })
+            .collect();
+
         RouterStatus {
             mac: self.mac,
             network: self.network,
             route_table: self.route_table.routes(),
             wan_type: self.wan_type.clone(),
-            wan_stats: self.route_table.stats(),
+            wan_stats,
         }
     }
 }

@@ -19,7 +19,7 @@ use nix::{
 };
 use shadesmar_net::{types::MacAddress, Ipv4Packet};
 
-use super::{Wan, WanHandle};
+use super::{Wan, WanHandle, WanStats};
 
 /// Maximum number of events mio can processes at one time
 const MAX_EVENTS_CAPACITY: usize = 10;
@@ -49,6 +49,9 @@ pub struct TunTap {
 
     /// Mac Address of the device
     mac: MacAddress,
+
+    /// Statistics about this tun/tap device
+    stats: WanStats,
 }
 
 pub struct TunTapHandle {
@@ -132,6 +135,7 @@ impl TunTap {
             tx,
             rx: Some(rx),
             mac,
+            stats: WanStats::new("TAP"),
         })
     }
 
@@ -162,8 +166,9 @@ impl Wan for TunTap {
     fn name(&self) -> &str {
         self.name.as_str()
     }
-    fn desc(&self) -> String {
-        String::from("TAP")
+
+    fn stats(&self) -> WanStats {
+        self.stats.clone()
     }
 
     fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError> {

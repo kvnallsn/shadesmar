@@ -44,6 +44,12 @@ macro_rules! human_bytes {
     }};
 }
 
+macro_rules! print_separator {
+    () => {
+        println!("{:-<80}", "-")
+    };
+}
+
 /// Internal application state
 pub struct App {
     /// Path to the configuration directory
@@ -274,47 +280,44 @@ impl App {
 
         match sock.recv()? {
             Some(CtrlResponse::Status(switch, router)) => {
-                let wan = router
-                    .wan_type
-                    .as_ref()
-                    .map(|s| s.as_str())
-                    .unwrap_or_else(|| "Disconnected");
-
                 println!("Router Status:");
-                println!("-------------------------------------------");
+                print_separator!();
                 println!("MAC:      {}", router.mac);
                 println!("Network:  {}", router.network);
 
                 println!("");
                 println!("WAN Interfaces:");
-                println!("-------------------------------------------");
-                println!("| {:^13} | {:^10} | {:^10} |", "Name", "TX", "RX");
-                println!("-------------------------------------------");
-                for (idx, stats) in router.wan_stats {
-                    let tx = human_bytes!(stats.tx as u64);
-                    let rx = human_bytes!(stats.rx as u64);
-                    println!("| {idx:<13} | {tx:>10} | {rx:>10} |");
+                print_separator!();
+                println!(
+                    "| {:^25} | {:^16} | {:^13} | {:^13} |",
+                    "Name", "Type", "TX", "RX"
+                );
+                print_separator!();
+                for (idx, (ty, tx, rx)) in router.wan_stats {
+                    let tx = human_bytes!(tx);
+                    let rx = human_bytes!(rx);
+                    println!("| {idx:<25} | {ty:<16} | {tx:>13} | {rx:>13} |");
                 }
-                println!("-------------------------------------------");
+                print_separator!();
 
                 println!("");
                 println!("Route Table:");
-                println!("-------------------------------------------");
+                print_separator!();
                 println!("| {:^20} | {:^16} |", "Destination", "Via");
-                println!("-------------------------------------------");
+                print_separator!();
                 for (net, idx) in router.route_table {
                     let net = net.to_string();
                     println!("| {net:<20} | {idx:<16} |");
                 }
-                println!("-------------------------------------------");
+                print_separator!();
 
                 println!("");
                 println!("Switch Status:");
-                println!("-------------------------------------------");
+                print_separator!();
                 println!("LAN:      {}", human_bytes!(switch.pkt_stats));
-                println!("-------------------------------------------");
+                print_separator!();
                 println!("| {:^8} | {:^10} | MACs", "Port", "Type");
-                println!("-------------------------------------------");
+                print_separator!();
                 for (idx, port) in switch.ports.iter().enumerate() {
                     let macs = port
                         .macs
@@ -329,7 +332,7 @@ impl App {
 
                     println!("| {idx:>8} | {:<10} | {macs}", port.desc);
                 }
-                println!("-------------------------------------------");
+                print_separator!();
             }
             Some(_) => tracing::warn!("requested, status, received non-status response"),
             None => tracing::warn!("requested status, did not receive a response"),

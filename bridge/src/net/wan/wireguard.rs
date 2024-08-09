@@ -26,7 +26,7 @@ use shadesmar_net::{nat::NatTable, Ipv4Header, Ipv4Packet};
 
 use crate::net::{router::RouterHandle, NetworkError};
 
-use super::{Wan, WanHandle};
+use super::{Wan, WanHandle, WanStats};
 
 const TOKEN_WAKER: Token = Token(0);
 const TOKEN_UDP: Token = Token(1);
@@ -61,8 +61,13 @@ pub struct WgDevice {
 
     /// Cache used to store/rebuild fragmented packets
     cache: HashMap<u16, Ipv4Packet>,
+
+    /// WAN statistics
+    stats: WanStats,
 }
 
+/// A handle/reference for the controller thread to communicate
+/// with a WireGuard WAN device.
 #[derive(Clone)]
 pub struct WgHandle {
     tx: Sender<Ipv4Packet>,
@@ -112,6 +117,7 @@ impl WgDevice {
         let poll = Poll::new()?;
         let waker = Waker::new(poll.registry(), TOKEN_WAKER)?;
 
+        let stats = WanStats::new(format!("WireGuard"));
         let (tx, rx) = flume::unbounded();
         let handle = WgHandle {
             tx,
@@ -128,6 +134,7 @@ impl WgDevice {
             poll,
             nat: NatTable::new(),
             cache: HashMap::new(),
+            stats,
         })
     }
 
@@ -151,10 +158,12 @@ impl WgDevice {
             TunnResult::Done => tracing::trace!("[wg] no action"),
             TunnResult::WriteToNetwork(pkt) => {
                 tracing::trace!("[wg] write {} bytes to network", pkt.len());
+                self.stats.tx_add(pkt.len() as u64);
                 sock.send_to(pkt, self.endpoint)?;
                 to_network = true;
             }
             TunnResult::WriteToTunnelV4(pkt, ip) => {
+                self.stats.rx_add(pkt.len() as u64);
                 let hdr = Ipv4Header::extract_from_slice(&pkt)?;
                 tracing::trace!(src = ?ip, dst = ?hdr.dst, "[wg] write {} bytes to tunnel", pkt.len());
                 let pkt = Ipv4Packet::parse(pkt.to_vec())?;
@@ -207,6 +216,7 @@ impl WgDevice {
                 }
             }
             TunnResult::WriteToTunnelV6(pkt, ip) => {
+                self.stats.rx_add(pkt.len() as u64);
                 tracing::trace!(?ip, "[wg] write {} bytes to tunnel", pkt.len());
                 router.route_ipv6(pkt.to_vec());
             }
@@ -221,8 +231,8 @@ impl Wan for WgDevice {
         self.name.as_str()
     }
 
-    fn desc(&self) -> String {
-        format!("WireGuard ({})", self.endpoint)
+    fn stats(&self) -> WanStats {
+        self.stats.clone()
     }
 
     fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError> {
