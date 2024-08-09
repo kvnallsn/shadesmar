@@ -14,6 +14,7 @@ use crate::net::{router::RouterHandle, NetworkError};
 use super::{Wan, WanHandle};
 
 pub struct UdpDevice {
+    name: String,
     sock: UdpSocket,
     dests: Vec<SocketAddr>,
 }
@@ -24,10 +25,11 @@ pub struct UdpDeviceHandle {
 }
 
 impl UdpDevice {
-    pub fn connect<A: ToSocketAddrs>(addrs: A) -> io::Result<Self> {
+    pub fn connect<S: Into<String>, A: ToSocketAddrs>(name: S, addrs: A) -> io::Result<Self> {
+        let name = name.into();
         let sock = UdpSocket::bind("0.0.0.0:0")?;
         let dests = addrs.to_socket_addrs()?.collect::<Vec<_>>();
-        Ok(Self { sock, dests })
+        Ok(Self { name, sock, dests })
     }
 }
 
@@ -35,6 +37,10 @@ impl Wan for UdpDevice
 where
     Self: Sized,
 {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
     fn desc(&self) -> String {
         String::from("UDP")
     }

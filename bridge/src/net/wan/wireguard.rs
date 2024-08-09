@@ -35,6 +35,9 @@ const TOKEN_TIMER: Token = Token(2);
 const WG_BUF_SZ: usize = 1600;
 
 pub struct WgDevice {
+    /// Human-friendly name of this wan device
+    name: String,
+
     /// WireGuard tunnel (encryptor/decryptor)
     tun: Tunn,
 
@@ -69,7 +72,6 @@ pub struct WgHandle {
 #[derive(Deserialize, Serialize)]
 pub struct WgConfig {
     pub key: String,
-    pub ipv4: Ipv4Addr,
     pub peer: String,
     pub endpoint: SocketAddr,
 }
@@ -78,8 +80,8 @@ impl Debug for WgConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "WgConfig {{ key: \"--snipped--\", ipv4: {}, peer: {}, endpoint: {} }}",
-            self.ipv4, self.peer, self.endpoint
+            "WgConfig {{ key: \"--snipped--\", peer: {}, endpoint: {} }}",
+            self.peer, self.endpoint
         )
     }
 }
@@ -89,7 +91,11 @@ impl WgDevice {
     ///
     /// ### Arguments
     /// * `cfg` - WireGuard configuration
-    pub fn create(cfg: &WgConfig) -> Result<Self, NetworkError> {
+    pub fn create<A: Into<Ipv4Addr>, S: Into<String>>(
+        name: S,
+        ipv4: A,
+        cfg: &WgConfig,
+    ) -> Result<Self, NetworkError> {
         use base64::prelude::BASE64_STANDARD;
 
         let mut key = [0u8; 32];
@@ -113,9 +119,10 @@ impl WgDevice {
         };
 
         Ok(Self {
+            name: name.into(),
             tun,
             endpoint: cfg.endpoint,
-            ipv4: cfg.ipv4,
+            ipv4: ipv4.into(),
             rx: Some(rx),
             handle,
             poll,
@@ -210,6 +217,10 @@ impl WgDevice {
 }
 
 impl Wan for WgDevice {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
     fn desc(&self) -> String {
         format!("WireGuard ({})", self.endpoint)
     }

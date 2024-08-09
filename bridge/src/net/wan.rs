@@ -18,6 +18,9 @@ pub trait Wan: Send + Sync
 where
     Self: 'static,
 {
+    /// Human-friendly name of the WAN device
+    fn name(&self) -> &str;
+
     /// Describes the type of WAN to which this handle is connected
     fn desc(&self) -> String;
 

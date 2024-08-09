@@ -182,7 +182,7 @@ impl Bridge {
         // spawn thread to receive messages/packets
         let router = Router::builder()
             .register_wans(&self.cfg.wan)?
-            .routing_table(self.cfg.router.table.clone())
+            .routing_table(&self.cfg.router.table)
             .register_l4_proto_handler(IcmpHandler::default())
             .register_l4_proto_handler(udp_handler)
             .spawn(self.cfg.router.ipv4, switch.clone())?;

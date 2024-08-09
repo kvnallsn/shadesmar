@@ -159,6 +159,9 @@ impl Debug for TunTap {
 }
 
 impl Wan for TunTap {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
     fn desc(&self) -> String {
         String::from("TAP")
     }

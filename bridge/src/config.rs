@@ -22,11 +22,31 @@ pub struct Config {
     pub virtio: VirtioConfig,
 }
 
+/// Contains all information needed to initialize a WAN connection
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub struct WanConfig {
+    /// Human-friendly name for WAN connection
+    pub name: String,
+
+    /// The IPv4 address to assign to this WAN device
+    pub ipv4: Ipv4Network,
+
+    /// WAN-device specific configuration
+    pub device: WanDevice,
+}
+
+/// Various different types of WAN devices supported by shadesmar
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
-pub enum WanConfig {
+pub enum WanDevice {
+    /// A generic tap device
     Tap(TapConfig),
+
+    /// Forwards traffic to a UDP socket
     Udp(UdpConfig),
+
+    /// Forwards all traffic over a wireguard socket
     Wireguard(WgConfig),
 }
 
@@ -45,7 +65,7 @@ pub struct RouterConfig {
     pub ipv4: Ipv4Network,
     pub dhcp: DhcpConfig,
     pub dns: bool,
-    pub table: HashMap<Ipv4Network, usize>,
+    pub table: HashMap<Ipv4Network, String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

@@ -1,26 +1,20 @@
 //! Simple L3 Router
 
 pub mod handler;
+pub mod table;
 
-use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv4Addr},
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
-};
+use std::{collections::HashMap, net::IpAddr, sync::Arc};
 
 use flume::{Receiver, Sender};
-use ip_network_table_deps_treebitmap::IpLookupTable;
 use serde::{Deserialize, Serialize};
 use shadesmar_net::{
     protocols::ArpPacket,
     types::{EtherType, Ipv4Network, MacAddress},
     EthernetFrame, EthernetPacket, Ipv4Packet, ProtocolError, Switch, SwitchPort,
 };
+use table::{ArcRouteTable, RouteStats, RouteTable};
 
-use crate::config::WanConfig;
+use crate::config::{WanConfig, WanDevice};
 pub use crate::net::{
     switch::VirtioSwitch,
     wan::{Wan, WanHandle},
@@ -32,8 +26,6 @@ use super::{
     wan::{TunTap, UdpDevice, WgDevice},
     NetworkError,
 };
-
-pub type RouteTable = IpLookupTable<Ipv4Addr, usize>;
 
 const IPV4_HDR_SZ: usize = 20;
 
@@ -71,14 +63,11 @@ pub struct RouterHandle {
     /// Network for which the router is responsible
     network: Ipv4Network,
 
+    /// A reference to the router's route table
+    route_table: ArcRouteTable,
+
     /// Type of WAN connected to router
     wan_type: Option<String>,
-
-    /// Total traffic sent over the WAN connection
-    wan_traffic_tx: Arc<AtomicU64>,
-
-    /// Total traffic received over the WAN connection
-    wan_traffic_rx: Arc<AtomicU64>,
 }
 
 /// A Layer 3 IPv4 Router
@@ -96,7 +85,7 @@ pub struct Router {
     wans: Vec<Box<dyn WanHandle>>,
 
     /// WAN routing table, maps IPv4 cidrs to wan index
-    table: RouteTable,
+    table: ArcRouteTable,
 
     /// MAC address of this router
     mac: MacAddress,
@@ -106,12 +95,6 @@ pub struct Router {
 
     /// Layer 4 protocol handlers to handle packets destined for this router
     ip4_handlers: HashMap<u8, Box<dyn ProtocolHandler>>,
-
-    /// Total traffic sent over the WAN connection
-    wan_traffic_tx: Arc<AtomicU64>,
-
-    /// Total traffic received over the WAN connection
-    wan_traffic_rx: Arc<AtomicU64>,
 }
 
 /// A `RouteBuilder` provides convenience methods for building routers
@@ -125,7 +108,7 @@ pub struct RouterBuilder {
     wans: Vec<Box<dyn Wan>>,
 
     /// WAN routing table, maps IPv4 cidrs to wan index
-    table: HashMap<Ipv4Network, usize>,
+    table: HashMap<Ipv4Network, String>,
 }
 
 /// Contains the status of the router, when requested by a control message
@@ -133,9 +116,9 @@ pub struct RouterBuilder {
 pub struct RouterStatus {
     pub mac: MacAddress,
     pub network: Ipv4Network,
+    pub route_table: HashMap<Ipv4Network, String>,
+    pub wan_stats: HashMap<String, RouteStats>,
     pub wan_type: Option<String>,
-    pub wan_traffic_rx: u64,
-    pub wan_traffic_tx: u64,
 }
 
 #[allow(dead_code)]
@@ -149,17 +132,17 @@ impl RouterBuilder {
     /// ### Arguments
     /// * `wans` - Upstream providers for unknown/non-local packets
     pub fn register_wans(mut self, wans: &[WanConfig]) -> Result<Self, NetworkError> {
-        let parse_wan = |cfg: &WanConfig| match cfg {
-            WanConfig::Tap(opts) => {
+        let parse_wan = |cfg: &WanConfig| match &cfg.device {
+            WanDevice::Tap(opts) => {
                 let wan = TunTap::create_tap(&opts.device)?;
                 Ok::<Box<dyn Wan>, NetworkError>(Box::new(wan) as Box<dyn Wan>)
             }
-            WanConfig::Udp(opts) => {
-                let wan = UdpDevice::connect(opts.endpoint)?;
+            WanDevice::Udp(opts) => {
+                let wan = UdpDevice::connect(&cfg.name, opts.endpoint)?;
                 Ok(Box::new(wan) as Box<dyn Wan>)
             }
-            WanConfig::Wireguard(opts) => {
-                let wan = WgDevice::create(opts)?;
+            WanDevice::Wireguard(opts) => {
+                let wan = WgDevice::create(&cfg.name, cfg.ipv4.ip(), opts)?;
                 Ok(Box::new(wan) as Box<dyn Wan>)
             }
         };
@@ -180,8 +163,8 @@ impl RouterBuilder {
     ///
     /// ### Arguments
     /// * `table` - Map of IPv4 networks (CIDRs) to WAN index
-    pub fn routing_table(mut self, table: HashMap<Ipv4Network, usize>) -> Self {
-        self.table = table;
+    pub fn routing_table(mut self, table: &HashMap<Ipv4Network, String>) -> Self {
+        self.table = table.clone();
         self
     }
 
@@ -209,17 +192,16 @@ impl RouterBuilder {
     ) -> Result<RouterHandle, NetworkError> {
         let (tx, rx) = flume::unbounded();
 
-        let wan_traffic_tx = Arc::new(AtomicU64::new(0));
-        let wan_traffic_rx = Arc::new(AtomicU64::new(0));
+        let table = RouteTable::new(self.table, &self.wans);
+        let route_table = Arc::clone(&table);
 
         let mac = MacAddress::generate();
         let handle = RouterHandle {
             tx,
             mac,
+            route_table,
             network,
             wan_type: None,
-            wan_traffic_tx: Arc::clone(&wan_traffic_tx),
-            wan_traffic_rx: Arc::clone(&wan_traffic_rx),
         };
         let port = switch.connect(handle.clone());
 
@@ -227,13 +209,6 @@ impl RouterBuilder {
         for wan in self.wans {
             let wan_handle = wan.spawn(handle.clone())?;
             wans.push(wan_handle);
-        }
-
-        let mut table = IpLookupTable::new();
-        table.insert(Ipv4Addr::from(0), 0, 0); // default route
-        for (ipnet, wan_idx) in self.table {
-            tracing::debug!("adding route to {ipnet} via {wan_idx}");
-            table.insert(ipnet.ip(), u32::from(ipnet.subnet_mask_bits()), wan_idx);
         }
 
         let router = Router {
@@ -245,8 +220,6 @@ impl RouterBuilder {
             mac,
             network,
             ip4_handlers: self.ip4_handlers,
-            wan_traffic_tx,
-            wan_traffic_rx,
         };
 
         std::thread::Builder::new()
@@ -278,8 +251,9 @@ impl Router {
                     Err(error) => tracing::warn!(?error, "unable to route lan packet"),
                 },
                 Ok(RouterMsg::FromWan4(pkt)) => {
-                    self.wan_traffic_rx
-                        .fetch_add(pkt.len() as u64, Ordering::Relaxed);
+                    //self.table.update_stats(wan_idx, tx, rx)
+                    //self.wan_traffic_rx
+                    //    .fetch_add(pkt.len() as u64, Ordering::Relaxed);
 
                     if let Err(error) = self
                         .route_ip4(pkt)
@@ -398,17 +372,12 @@ impl Router {
     /// ### Arguments
     /// * `pkt` - A layer 3 (IPv4) packet to write to the ether
     fn forward_packet(&mut self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
-        let wan_idx = self
-            .table
-            .longest_match(pkt.dest())
-            .map(|(_, _, idx)| *idx)
-            .unwrap_or(0);
+        let wan_idx = self.table.get_route_wan_idx(pkt.dest());
 
         tracing::debug!("routing packet with dest {} over wan {wan_idx}", pkt.dest());
 
         if let Some(ref wan) = self.wans.get(wan_idx) {
-            self.wan_traffic_tx
-                .fetch_add(pkt.len() as u64, Ordering::Relaxed);
+            self.table.update_stats(wan_idx, pkt.len(), 0usize);
 
             if let Err(error) = wan.write(pkt) {
                 tracing::warn!(?error, "unable to write to wan, dropping packet");
@@ -546,9 +515,9 @@ impl RouterHandle {
         RouterStatus {
             mac: self.mac,
             network: self.network,
+            route_table: self.route_table.routes(),
             wan_type: self.wan_type.clone(),
-            wan_traffic_rx: self.wan_traffic_rx.load(Ordering::Relaxed),
-            wan_traffic_tx: self.wan_traffic_tx.load(Ordering::Relaxed),
+            wan_stats: self.route_table.stats(),
         }
     }
 }

@@ -282,15 +282,36 @@ impl App {
 
                 println!("Router Status:");
                 println!("-------------------------------------------");
-                println!("WAN:      {}", wan);
                 println!("MAC:      {}", router.mac);
                 println!("Network:  {}", router.network);
-                println!("WAN TX:   {}", human_bytes!(router.wan_traffic_tx));
-                println!("WAN RX:   {}", human_bytes!(router.wan_traffic_rx));
-                println!("LAN:      {}", human_bytes!(switch.pkt_stats));
+
+                println!("");
+                println!("WAN Interfaces:");
+                println!("-------------------------------------------");
+                println!("| {:^13} | {:^10} | {:^10} |", "Name", "TX", "RX");
+                println!("-------------------------------------------");
+                for (idx, stats) in router.wan_stats {
+                    let tx = human_bytes!(stats.tx as u64);
+                    let rx = human_bytes!(stats.rx as u64);
+                    println!("| {idx:<13} | {tx:>10} | {rx:>10} |");
+                }
+                println!("-------------------------------------------");
+
+                println!("");
+                println!("Route Table:");
+                println!("-------------------------------------------");
+                println!("| {:^20} | {:^16} |", "Destination", "Via");
+                println!("-------------------------------------------");
+                for (net, idx) in router.route_table {
+                    let net = net.to_string();
+                    println!("| {net:<20} | {idx:<16} |");
+                }
+                println!("-------------------------------------------");
 
                 println!("");
                 println!("Switch Status:");
+                println!("-------------------------------------------");
+                println!("LAN:      {}", human_bytes!(switch.pkt_stats));
                 println!("-------------------------------------------");
                 println!("| {:^8} | {:^10} | MACs", "Port", "Type");
                 println!("-------------------------------------------");
