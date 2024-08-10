@@ -16,6 +16,7 @@ use shadesmar_bridge::{
     ctrl::{CtrlClientStream, CtrlRequest, CtrlResponse},
     Bridge,
 };
+use shadesmar_net::types::Ipv4Network;
 
 use crate::Command;
 
@@ -132,6 +133,12 @@ impl App {
             Command::Status { network } => self.status(network)?,
             Command::Netflow { network } => self.pcap(network)?,
             Command::Stop { network, force } => self.stop(network, force)?,
+            Command::AddRoute {
+                network,
+                route,
+                wan,
+            } => self.add_route(network, route, wan)?,
+            Command::DeleteRoute { network, route } => self.del_route(network, route)?,
         };
         Ok(())
     }
@@ -410,6 +417,37 @@ impl App {
         sock.send(CtrlRequest::ConnectTap(tap.clone()))?;
 
         handle_pcap(tap)?;
+
+        Ok(())
+    }
+
+    /// Adds a new route to the routing table
+    ///
+    /// ### Arguments
+    /// * `network` - Network for which to add route
+    /// * `route` - Destination network/subnet to add
+    /// * `wan` - WAN device over which to route traffic
+    fn add_route(self, network: String, route: Ipv4Network, wan: String) -> anyhow::Result<()> {
+        let network = self.open_network(network)?;
+
+        let mut sock = network.ctrl_socket()?;
+        sock.send(CtrlRequest::AddRoute(route, wan))?;
+        sock.recv()?;
+
+        Ok(())
+    }
+
+    /// Remvoes a route to the routing table
+    ///
+    /// ### Arguments
+    /// * `network` - Network for which to delete route
+    /// * `route` - Destination network/subnet to delete
+    fn del_route(self, network: String, route: Ipv4Network) -> anyhow::Result<()> {
+        let network = self.open_network(network)?;
+
+        let mut sock = network.ctrl_socket()?;
+        sock.send(CtrlRequest::DelRoute(route))?;
+        sock.recv()?;
 
         Ok(())
     }

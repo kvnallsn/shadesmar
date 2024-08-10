@@ -355,6 +355,15 @@ impl Bridge {
                 CtrlRequest::Ping => {
                     strm.send(CtrlResponse::Pong)?;
                 }
+                CtrlRequest::AddRoute(route, wan) => {
+                    router.add_route(route, wan)?;
+                    strm.send(CtrlResponse::Pong)?;
+                }
+                CtrlRequest::DelRoute(route) => {
+                    router.del_route(route)?;
+                    strm.send(CtrlResponse::Pong)?;
+                }
+                CtrlRequest::RemoveWan(_name) => (),
             }
         }
 

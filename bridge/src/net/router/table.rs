@@ -85,6 +85,7 @@ impl RouteTable {
     /// * `ip` - Subnet/IPv4 address for which to route traffic
     /// * `wan` - Index of the WAN adapter that will handle the traffic
     pub fn add_route(&self, ip: Ipv4Network, wan: usize) {
+        tracing::trace!("adding route: {ip} via {wan}");
         self.table
             .write()
             .insert(ip.ip(), u32::from(ip.subnet_mask_bits()), wan);
@@ -97,6 +98,7 @@ impl RouteTable {
     /// ### Arguments
     /// * `ip` - Subnet/IPv4 address for which to remove a specific route
     pub fn remove_route(&self, ip: Ipv4Network) {
+        tracing::trace!("removing route: {ip}");
         self.table
             .write()
             .remove(ip.ip(), u32::from(ip.subnet_mask_bits()));

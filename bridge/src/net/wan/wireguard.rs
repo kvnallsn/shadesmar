@@ -70,6 +70,7 @@ pub struct WgDevice {
 /// with a WireGuard WAN device.
 #[derive(Clone)]
 pub struct WgHandle {
+    name: String,
     tx: Sender<Ipv4Packet>,
     waker: Arc<Waker>,
 }
@@ -117,15 +118,17 @@ impl WgDevice {
         let poll = Poll::new()?;
         let waker = Waker::new(poll.registry(), TOKEN_WAKER)?;
 
+        let name = name.into();
         let stats = WanStats::new(format!("WireGuard"));
         let (tx, rx) = flume::unbounded();
         let handle = WgHandle {
+            name: name.clone(),
             tx,
             waker: Arc::new(waker),
         };
 
         Ok(Self {
-            name: name.into(),
+            name,
             tun,
             endpoint: cfg.endpoint,
             ipv4: ipv4.into(),
@@ -340,6 +343,10 @@ impl Wan for WgDevice {
 }
 
 impl WanHandle for WgHandle {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
         self.tx.send(pkt)?;
         self.waker.wake()?;

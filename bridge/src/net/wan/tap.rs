@@ -55,6 +55,7 @@ pub struct TunTap {
 }
 
 pub struct TunTapHandle {
+    name: String,
     tx: Sender<Ipv4Packet>,
     waker: Arc<Waker>,
 }
@@ -180,6 +181,7 @@ impl Wan for TunTap {
         )?;
 
         let handle = TunTapHandle {
+            name: self.name.clone(),
             tx: self.tx.clone(),
             waker: Arc::new(waker),
         };
@@ -225,6 +227,10 @@ impl Wan for TunTap {
 }
 
 impl WanHandle for TunTapHandle {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
         self.tx.send(pkt).ok();
         self.waker.wake().ok();

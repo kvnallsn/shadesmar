@@ -23,7 +23,11 @@ pub struct PcapDevice {
     stats: WanStats,
 }
 
-pub struct PcapDeviceHandle(Mutex<PcapWriter<File>>, WanStats);
+pub struct PcapDeviceHandle {
+    name: String,
+    writer: Mutex<PcapWriter<File>>,
+    stats: WanStats,
+}
 
 impl PcapDevice {
     /// Creates a new WAN device to capture traffic and save into a PCAP file
@@ -71,10 +75,11 @@ impl Wan for PcapDevice {
         };
 
         let writer = PcapWriter::with_header(file, header)?;
-        Ok(Box::new(PcapDeviceHandle(
-            Mutex::new(writer),
-            self.stats.clone(),
-        )))
+        Ok(Box::new(PcapDeviceHandle {
+            name: self.name.clone(),
+            writer: Mutex::new(writer),
+            stats: self.stats.clone(),
+        }))
     }
 
     fn run(self: Box<Self>, _router: RouterTx) -> Result<(), NetworkError> {
@@ -84,9 +89,13 @@ impl Wan for PcapDevice {
 }
 
 impl WanHandle for PcapDeviceHandle {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
-        self.1.tx_add(pkt.len());
-        let mut wr = self.0.lock();
+        self.stats.tx_add(pkt.len());
+        let mut wr = self.writer.lock();
         wr.write_packet(&PcapPacket {
             timestamp: UNIX_EPOCH.elapsed().unwrap(),
             orig_len: pkt.len() as u32,

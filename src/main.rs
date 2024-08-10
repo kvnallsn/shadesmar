@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use app::App;
 use clap::{Parser, Subcommand};
+use shadesmar_net::types::Ipv4Network;
 
 /// Command line options
 #[derive(Debug, Parser)]
@@ -56,6 +57,27 @@ pub enum Command {
     Netflow {
         /// Name of network to pcap
         network: String,
+    },
+
+    /// Adds a new route to the routing table
+    AddRoute {
+        /// Name of network for which to add route
+        network: String,
+
+        /// Destination network / subnet to add
+        route: Ipv4Network,
+
+        /// Name of WAN device over which to route traffic to subnet
+        wan: String,
+    },
+
+    /// Deletes a route from the routing table
+    DeleteRoute {
+        /// Name of network for which to add route
+        network: String,
+
+        /// Destination network / subnet to add
+        route: Ipv4Network,
     },
 
     /// Stops a (daemonized) shadesmar network

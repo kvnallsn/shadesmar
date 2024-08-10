@@ -561,6 +561,39 @@ impl RouterHandle {
             wan_stats,
         }
     }
+
+    /// Adds a route to the routing table
+    ///
+    /// ### Arguments
+    /// * `dst` - Destintation network
+    pub fn add_route<S: Into<String>>(&self, dst: Ipv4Network, wan: S) -> Result<(), NetworkError> {
+        let wan_name = wan.into();
+
+        match self
+            .wans
+            .read()
+            .iter()
+            .position(|wan| wan.name() == &wan_name)
+        {
+            None => {
+                tracing::warn!("wan {wan_name} not found, not adding route");
+                // TODO: return error?
+                return Ok(());
+            }
+            Some(idx) => self.route_table.add_route(dst, idx),
+        }
+
+        Ok(())
+    }
+
+    /// Deletes a route from the routing table
+    ///
+    /// ### Arguments
+    /// * `route` - Route to delete
+    pub fn del_route(&self, route: Ipv4Network) -> Result<(), NetworkError> {
+        self.route_table.remove_route(route);
+        Ok(())
+    }
 }
 
 impl SwitchPort for RouterTx {

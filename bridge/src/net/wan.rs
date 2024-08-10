@@ -120,6 +120,9 @@ where
 }
 
 pub trait WanHandle: Send + Sync {
+    /// Returns the name of this WAN device
+    fn name(&self) -> &str;
+
     /// Writes a packet to the upstream device
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError>;
 }

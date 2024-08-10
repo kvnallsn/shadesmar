@@ -8,6 +8,7 @@ use std::{
 
 use mio::{event::Source, net::UnixListener, Token};
 use serde::{Deserialize, Serialize};
+use shadesmar_net::types::Ipv4Network;
 
 use crate::{
     error::Error,
@@ -42,6 +43,15 @@ pub enum CtrlRequest {
 
     /// Requests a pong response to check if network is alive
     Ping,
+
+    /// Adds a route to the routing table
+    AddRoute(Ipv4Network, String),
+
+    /// Removes a route from the routing table
+    DelRoute(Ipv4Network),
+
+    /// Removes a wan connection (by name)
+    RemoveWan(String),
 }
 
 /// Represents a response from the server to a client

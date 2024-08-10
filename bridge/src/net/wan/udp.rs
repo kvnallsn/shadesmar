@@ -21,6 +21,7 @@ pub struct UdpDevice {
 }
 
 pub struct UdpDeviceHandle {
+    name: String,
     sock: RawFd,
     dests: Vec<SocketAddr>,
 }
@@ -54,6 +55,7 @@ where
 
     fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError> {
         let handle = UdpDeviceHandle {
+            name: self.name.clone(),
             sock: self.sock.as_raw_fd(),
             dests: self.dests.clone(),
         };
@@ -80,6 +82,10 @@ where
 }
 
 impl WanHandle for UdpDeviceHandle {
+    fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
         let iov = [IoSlice::new(&pkt.as_bytes())];
 
