@@ -16,7 +16,11 @@ pub type ArcRouteTable = Arc<RouteTable>;
 /// Matches IPs (and subnets/CIDRs) to interface ids and tracks statistics per interface
 #[derive(Default)]
 pub struct RouteTable {
+    /// Ipv4 routing table
     table: RwLock<IpLookupTable<Ipv4Addr, usize>>,
+
+    /// Stats for amount of data traversed over a route
+    stats: RwLock<HashMap<Ipv4Network, u64>>,
 
     /// Mapping of interface ids to names
     names: RwLock<HashMap<usize, String>>,
@@ -29,6 +33,7 @@ impl RouteTable {
     /// * `routes` - Table matching CIDRs to WAN interface ids
     pub fn new(routes: HashMap<Ipv4Network, String>, wans: &[Box<dyn Wan>]) -> ArcRouteTable {
         let mut table = IpLookupTable::new();
+        let stats = HashMap::new();
         let mut names = HashMap::default();
 
         for (ipnet, wan_name) in routes {
@@ -47,6 +52,7 @@ impl RouteTable {
 
         let table = Self {
             table: RwLock::new(table),
+            stats: RwLock::new(stats),
             names: RwLock::new(names),
         };
 
@@ -60,7 +66,16 @@ impl RouteTable {
     pub fn get_route_wan_idx(&self, ip: Ipv4Addr) -> usize {
         match self.table.read().longest_match(ip) {
             None => 0,
-            Some((_ip, _mask, idx)) => *idx,
+            Some((ip, mask, idx)) => {
+                self.stats
+                    .write()
+                    .entry(Ipv4Network::new(ip, mask as u8))
+                    .and_modify(|count| {
+                        *count += 1;
+                    })
+                    .or_insert(1);
+                *idx
+            }
         }
     }
 
@@ -88,16 +103,21 @@ impl RouteTable {
     }
 
     /// Returns a mapping of subnets/prefixes to interface ids
-    pub fn routes(&self) -> HashMap<Ipv4Network, String> {
+    pub fn routes(&self) -> HashMap<Ipv4Network, (String, u64)> {
         self.table
             .read()
             .iter()
             .map(|(ip, mask, idx)| {
                 let net = Ipv4Network::new(ip, mask as u8);
-                match self.names.read().get(idx) {
-                    Some(name) => (net, name.clone()),
-                    None => (net, String::from("unnamed")),
-                }
+
+                let name = match self.names.read().get(idx) {
+                    Some(name) => name.clone(),
+                    None => String::from("unnamed"),
+                };
+
+                let num_packets = self.stats.read().get(&net).map(|count| *count).unwrap_or(0);
+
+                (net, (name, num_packets))
             })
             .collect()
     }

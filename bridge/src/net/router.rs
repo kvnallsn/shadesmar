@@ -119,7 +119,7 @@ pub struct RouterBuilder {
 pub struct RouterStatus {
     pub mac: MacAddress,
     pub network: Ipv4Network,
-    pub route_table: HashMap<Ipv4Network, String>,
+    pub route_table: HashMap<Ipv4Network, (String, u64)>,
     pub wan_stats: HashMap<String, (String, u64, u64)>,
     pub wan_type: Option<String>,
 }

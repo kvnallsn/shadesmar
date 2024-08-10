@@ -329,9 +329,12 @@ impl App {
                 println!("");
                 println!("Route Table:");
                 print_separator!();
-                println!("| {:^20} | {:^16} |", "Destination", "Via");
+                println!(
+                    "| {:^20} | {:^16} | {:^14} |",
+                    "Destination", "Via", "Packet Count"
+                );
                 print_separator!();
-                for (net, idx) in router
+                for (net, (idx, num_packets)) in router
                     .route_table
                     .into_iter()
                     .collect::<BinaryHeap<_>>()
@@ -339,7 +342,7 @@ impl App {
                     .rev()
                 {
                     let net = net.to_string();
-                    println!("| {net:<20} | {idx:<16} |");
+                    println!("| {net:<20} | {idx:<16} | {num_packets:<14} |");
                 }
                 print_separator!();
 
