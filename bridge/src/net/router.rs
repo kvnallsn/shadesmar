@@ -66,9 +66,6 @@ pub struct RouterHandle {
     /// A reference to the router's route table
     route_table: ArcRouteTable,
 
-    /// Type of WAN connected to router
-    wan_type: Option<String>,
-
     /// Information about each registered WAN connection
     wan_stats: HashMap<String, WanStats>,
 }
@@ -121,7 +118,6 @@ pub struct RouterStatus {
     pub network: Ipv4Network,
     pub route_table: HashMap<Ipv4Network, (String, u64)>,
     pub wan_stats: HashMap<String, (String, u64, u64)>,
-    pub wan_type: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -223,7 +219,6 @@ impl RouterBuilder {
             mac,
             route_table,
             network,
-            wan_type: None,
             wan_stats,
         };
         let port = switch.connect(handle.clone());
@@ -548,7 +543,6 @@ impl RouterHandle {
             mac: self.mac,
             network: self.network,
             route_table: self.route_table.routes(),
-            wan_type: self.wan_type.clone(),
             wan_stats,
         }
     }
