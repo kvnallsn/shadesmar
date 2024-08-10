@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use crate::net::{router::RouterHandle, NetworkError};
+use crate::net::{router::RouterTx, NetworkError};
 
 use flume::{Receiver, Sender};
 use mio::{unix::SourceFd, Events, Interest, Poll, Token, Waker};
@@ -187,7 +187,7 @@ impl Wan for TunTap {
         Ok(Box::new(handle))
     }
 
-    fn run(mut self: Box<Self>, _router: RouterHandle) -> Result<(), NetworkError> {
+    fn run(mut self: Box<Self>, _router: RouterTx) -> Result<(), NetworkError> {
         let mut events = Events::with_capacity(MAX_EVENTS_CAPACITY);
 
         let rx = self.rx.take().unwrap();

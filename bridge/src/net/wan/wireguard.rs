@@ -24,7 +24,7 @@ use nix::sys::{
 use serde::{Deserialize, Serialize};
 use shadesmar_net::{nat::NatTable, Ipv4Header, Ipv4Packet};
 
-use crate::net::{router::RouterHandle, NetworkError};
+use crate::net::{router::RouterTx, NetworkError};
 
 use super::{Wan, WanHandle, WanStats};
 
@@ -145,7 +145,7 @@ impl WgDevice {
     fn handle_tun_result(
         &mut self,
         action: TunnResult,
-        router: &RouterHandle,
+        router: &RouterTx,
         sock: &UdpSocket,
     ) -> Result<bool, NetworkError> {
         let mut to_network = false;
@@ -239,7 +239,7 @@ impl Wan for WgDevice {
         Ok(Box::new(self.handle.clone()))
     }
 
-    fn run(mut self: Box<Self>, router: RouterHandle) -> Result<(), NetworkError> {
+    fn run(mut self: Box<Self>, router: RouterTx) -> Result<(), NetworkError> {
         let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
         sock.set_nonblocking(true)?;
         let mut sock = UdpSocket::from_std(sock);

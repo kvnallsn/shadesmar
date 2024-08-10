@@ -19,7 +19,7 @@ pub use self::{
     wireguard::{WgConfig, WgDevice},
 };
 
-use super::{router::RouterHandle, NetworkError};
+use super::{router::RouterTx, NetworkError};
 
 /// Represents statistics for a WAN device
 ///
@@ -103,9 +103,9 @@ where
 
     fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError>;
 
-    fn run(self: Box<Self>, router: RouterHandle) -> Result<(), NetworkError>;
+    fn run(self: Box<Self>, router: RouterTx) -> Result<(), NetworkError>;
 
-    fn spawn(self: Box<Self>, router: RouterHandle) -> Result<Box<dyn WanHandle>, NetworkError> {
+    fn spawn(self: Box<Self>, router: RouterTx) -> Result<Box<dyn WanHandle>, NetworkError> {
         let handle = self.as_wan_handle()?;
 
         std::thread::Builder::new()

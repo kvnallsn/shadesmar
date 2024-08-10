@@ -6,6 +6,7 @@ pub mod table;
 use std::{collections::HashMap, net::IpAddr, path::Path, sync::Arc};
 
 use flume::{Receiver, Sender};
+use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use shadesmar_net::{
     protocols::ArpPacket,
@@ -51,12 +52,13 @@ pub enum RouterAction {
     Drop(Vec<u8>),
 }
 
+/// Provides means to send packets to be handle/routed by the router
+#[derive(Clone)]
+pub struct RouterTx(Sender<RouterMsg>);
+
 /// Provides a means of queueing packets to be processed by a `Router`
 #[derive(Clone)]
 pub struct RouterHandle {
-    /// Transmit side of the (mpsc) router channel
-    tx: Sender<RouterMsg>,
-
     /// MAC address of the router
     mac: MacAddress,
 
@@ -68,6 +70,9 @@ pub struct RouterHandle {
 
     /// Information about each registered WAN connection
     wan_stats: HashMap<String, WanStats>,
+
+    /// Currently active WAN connections for the router
+    wans: Arc<RwLock<Vec<Box<dyn WanHandle>>>>,
 }
 
 /// A Layer 3 IPv4 Router
@@ -81,8 +86,8 @@ pub struct Router {
     /// Port on the switch to which this router is assigned
     port: usize,
 
-    /// Optional WAN (upstream) connection to forward non-local packets
-    wans: Vec<Box<dyn WanHandle>>,
+    /// Currently active WAN connections for the router
+    wans: Arc<RwLock<Vec<Box<dyn WanHandle>>>>,
 
     /// WAN routing table, maps IPv4 cidrs to wan index
     table: ArcRouteTable,
@@ -118,6 +123,30 @@ pub struct RouterStatus {
     pub network: Ipv4Network,
     pub route_table: HashMap<Ipv4Network, (String, u64)>,
     pub wan_stats: HashMap<String, (String, u64, u64)>,
+}
+
+impl RouterTx {
+    /// Creates a new channel to communicate with the router
+    pub fn new() -> (Self, Receiver<RouterMsg>) {
+        let (tx, rx) = flume::unbounded();
+        (Self(tx), rx)
+    }
+
+    /// Queues an IPv4 packet to be routed
+    ///
+    /// ### Arguments
+    /// * `pkt` - IPv4 packet to route
+    pub fn route_ipv4(&self, pkt: Ipv4Packet) {
+        self.0.send(RouterMsg::FromWan4(pkt)).ok();
+    }
+
+    /// Queues an IPv6 packet to be routed
+    ///
+    /// ### Arguments
+    /// * `pkt` - IPv6 packet to route
+    pub fn route_ipv6(&self, _pkt: Vec<u8>) {
+        tracing::warn!("[router] no ipv6 support");
+    }
 }
 
 #[allow(dead_code)]
@@ -202,7 +231,7 @@ impl RouterBuilder {
         network: Ipv4Network,
         switch: VirtioSwitch,
     ) -> Result<RouterHandle, NetworkError> {
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = RouterTx::new();
 
         let table = RouteTable::new(self.table, &self.wans);
         let route_table = Arc::clone(&table);
@@ -213,21 +242,23 @@ impl RouterBuilder {
             .map(|wan| (wan.name().to_owned(), wan.stats()))
             .collect::<HashMap<String, WanStats>>();
 
+        let port = switch.connect(tx.clone());
+
+        let mut wans = Vec::with_capacity(self.wans.len());
+        for wan in self.wans {
+            let wan_handle = wan.spawn(tx.clone())?;
+            wans.push(wan_handle);
+        }
+        let wans = Arc::new(RwLock::new(wans));
+
         let mac = MacAddress::generate();
         let handle = RouterHandle {
-            tx,
             mac,
             route_table,
             network,
             wan_stats,
+            wans: Arc::clone(&wans),
         };
-        let port = switch.connect(handle.clone());
-
-        let mut wans = Vec::with_capacity(self.wans.len());
-        for wan in self.wans {
-            let wan_handle = wan.spawn(handle.clone())?;
-            wans.push(wan_handle);
-        }
 
         let router = Router {
             arp: HashMap::new(),
@@ -394,7 +425,7 @@ impl Router {
 
         tracing::debug!("routing packet with dest {} over wan {wan_idx}", pkt.dest());
 
-        if let Some(ref wan) = self.wans.get(wan_idx) {
+        if let Some(ref wan) = self.wans.read().get(wan_idx) {
             if let Err(error) = wan.write(pkt) {
                 tracing::warn!(?error, "unable to write to wan, dropping packet");
             }
@@ -505,22 +536,6 @@ impl Router {
 }
 
 impl RouterHandle {
-    /// Queues an IPv4 packet to be routed
-    ///
-    /// ### Arguments
-    /// * `pkt` - IPv4 packet to route
-    pub fn route_ipv4(&self, pkt: Ipv4Packet) {
-        self.tx.send(RouterMsg::FromWan4(pkt)).ok();
-    }
-
-    /// Queues an IPv6 packet to be routed
-    ///
-    /// ### Arguments
-    /// * `pkt` - IPv6 packet to route
-    pub fn route_ipv6(&self, _pkt: Vec<u8>) {
-        tracing::warn!("[router] no ipv6 support");
-    }
-
     /// Returns the MAC address of the router
     pub fn mac(&self) -> MacAddress {
         self.mac
@@ -548,13 +563,13 @@ impl RouterHandle {
     }
 }
 
-impl SwitchPort for RouterHandle {
+impl SwitchPort for RouterTx {
     fn desc(&self) -> &'static str {
         "router"
     }
 
     fn enqueue(&self, frame: EthernetFrame, pkt: Vec<u8>) {
         let pkt = EthernetPacket::new(frame, pkt);
-        self.tx.send(RouterMsg::FromLan(pkt)).ok();
+        self.0.send(RouterMsg::FromLan(pkt)).ok();
     }
 }

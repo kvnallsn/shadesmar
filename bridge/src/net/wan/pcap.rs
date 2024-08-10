@@ -9,7 +9,7 @@ use pcap_file::{
 };
 use shadesmar_net::Ipv4Packet;
 
-use crate::net::{router::RouterHandle, NetworkError};
+use crate::net::{router::RouterTx, NetworkError};
 
 use super::{Wan, WanHandle, WanStats};
 
@@ -77,7 +77,7 @@ impl Wan for PcapDevice {
         )))
     }
 
-    fn run(self: Box<Self>, _router: RouterHandle) -> Result<(), NetworkError> {
+    fn run(self: Box<Self>, _router: RouterTx) -> Result<(), NetworkError> {
         tracing::debug!("pcap wan thread exiting, nothing to do (pcap drops all packets)");
         Ok(())
     }

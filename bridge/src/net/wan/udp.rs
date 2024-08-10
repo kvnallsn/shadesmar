@@ -9,7 +9,7 @@ use std::{
 use nix::sys::socket::{sendmsg, MsgFlags, SockaddrIn, SockaddrIn6};
 use shadesmar_net::Ipv4Packet;
 
-use crate::net::{router::RouterHandle, NetworkError};
+use crate::net::{router::RouterTx, NetworkError};
 
 use super::{Wan, WanHandle, WanStats};
 
@@ -61,7 +61,7 @@ where
         Ok(Box::new(handle))
     }
 
-    fn run(self: Box<Self>, router: RouterHandle) -> Result<(), NetworkError> {
+    fn run(self: Box<Self>, router: RouterTx) -> Result<(), NetworkError> {
         let mut buf = [0u8; 1600];
         loop {
             let (sz, peer) = self.sock.recv_from(&mut buf)?;
