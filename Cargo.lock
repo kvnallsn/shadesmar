@@ -1074,6 +1074,7 @@ dependencies = [
  "dhcproto",
  "flume",
  "ip_network_table-deps-treebitmap",
+ "jiff",
  "mio",
  "nix 0.29.0",
  "parking_lot",

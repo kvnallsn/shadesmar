@@ -20,6 +20,7 @@ use crate::Command;
 
 const SHADESMAR_CFG_PATH: &str = "/etc/shadesmar";
 const SHADESMAR_RUN_PATH: &str = "/var/run/shadesmar";
+const SHADESMAR_DAT_PATH: &str = "/var/lib/shadesmar";
 
 /// Configuration constants
 const SHADESMAR_CFG_EXT: &str = "yml";
@@ -58,6 +59,9 @@ pub struct App {
     /// Path to the run directory
     run_dir: PathBuf,
 
+    /// Path to the network's data directory (pcap, etc.)
+    data_dir: PathBuf,
+
     /// Theme to use for input prompts
     theme: Box<dyn Theme>,
 }
@@ -68,11 +72,14 @@ pub struct Network {
     /// Name of the network
     name: String,
 
-    /// Path to the network's runtime directory
+    /// Path to the network's runtime directory (sockets, etc.)
     run_dir: PathBuf,
 
     /// Path to the network's configuration file
     cfg_file: PathBuf,
+
+    /// Path to the network's data directory (pcap, etc.)
+    data_dir: PathBuf,
 }
 
 impl App {
@@ -83,6 +90,7 @@ impl App {
     pub fn initialize() -> anyhow::Result<Self> {
         let cfg_dir = PathBuf::from(SHADESMAR_CFG_PATH);
         let run_dir = PathBuf::from(SHADESMAR_RUN_PATH);
+        let data_dir = PathBuf::from(SHADESMAR_DAT_PATH);
 
         if !cfg_dir.exists() {
             tracing::info!(path = %cfg_dir.display(), "configuration directory does not exist, attempting to create");
@@ -109,6 +117,7 @@ impl App {
         Ok(Self {
             cfg_dir,
             run_dir,
+            data_dir,
             theme,
         })
     }
@@ -116,7 +125,7 @@ impl App {
     /// Runs the application
     pub fn run(self, cmd: Command) -> anyhow::Result<()> {
         match cmd {
-            Command::Install { config } => self.install(config, None)?,
+            Command::Install { config, name } => self.install(config, name)?,
             Command::Uninstall { network, purge } => self.uninstall(network, purge)?,
             Command::Start { network } => self.start(network)?,
             Command::Status { network } => self.status(network)?,
@@ -132,6 +141,7 @@ impl App {
     /// * `network` - Name of the network
     pub fn open_network(&self, network: String) -> anyhow::Result<Network> {
         let run_dir = self.run_dir.join(&network);
+        let data_dir = self.data_dir.join(&network);
         let cfg_file = self
             .cfg_dir
             .join(&network)
@@ -141,6 +151,7 @@ impl App {
             name: network,
             run_dir,
             cfg_file,
+            data_dir,
         })
     }
 
@@ -250,10 +261,17 @@ impl App {
             .context("unable to open network")?;
 
         if !network.run_dir().exists() {
-            tracing::debug!(path = %network.run_dir.display(), "attmepting to create runtime directory");
+            tracing::debug!(path = %network.run_dir().display(), "attmepting to create runtime directory");
 
             std::fs::create_dir_all(network.run_dir())
                 .context("unable to create runtime directory")?;
+        }
+
+        if !network.data_dir().exists() {
+            tracing::debug!(path = %network.data_dir().display(), "attempting to create data directory");
+
+            std::fs::create_dir_all(network.data_dir())
+                .context("unable to create data directory")?;
         }
 
         tracing::debug!(path = %network.cfg_file().display(), "loading network configuration");
@@ -261,7 +279,8 @@ impl App {
             .context("unable to load network configuration")?;
 
         let bridge = Bridge::builder()
-            .base(network.run_dir())
+            .run_dir(network.run_dir())
+            .data_dir(network.data_dir())
             .build(network.name(), cfg)?;
 
         network.write_pid()?;
@@ -394,6 +413,11 @@ impl Network {
     /// Returns the path to the runtime directory
     pub fn run_dir(&self) -> &Path {
         &self.run_dir
+    }
+
+    /// Returns the path to the data directory
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
     }
 
     /// Returns the path to the file containing the pid of the network (if running)

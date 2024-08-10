@@ -47,7 +47,10 @@ pub struct BridgeBuilder {
     pcap: Option<PathBuf>,
 
     /// Path to base directory for bridge-related files
-    base: Option<PathBuf>,
+    run_dir: Option<PathBuf>,
+
+    /// Path to the data directory for network-related files
+    data_dir: Option<PathBuf>,
 }
 
 pub struct Bridge {
@@ -56,6 +59,7 @@ pub struct Bridge {
     ctrl_socket_path: PathBuf,
     pcap: Option<PathBuf>,
     cfg: BridgeConfig,
+    data_dir: PathBuf,
 }
 
 impl BridgeBuilder {
@@ -68,27 +72,55 @@ impl BridgeBuilder {
         self
     }
 
-    /// Sets the base path to use for storing bridge-related files
+    /// Sets the runtime directory to store ephemeral files (i.e., sockets) generated
+    /// by this network/bridge
     ///
     /// ### Arguments
     /// * `base` - Base path (directory)
-    pub fn base<P: Into<PathBuf>>(mut self, base: P) -> Self {
-        self.base = Some(base.into());
+    pub fn run_dir<P: Into<PathBuf>>(mut self, base: P) -> Self {
+        self.run_dir = Some(base.into());
+        self
+    }
+
+    /// Sets the data directory to store persistent files (i.e., pcap) generated
+    /// by this network/bridge
+    ///
+    /// ### Arguments
+    /// * `dir` - Path to the data directory
+    pub fn data_dir<P: Into<PathBuf>>(mut self, dir: P) -> Self {
+        self.data_dir = Some(dir.into());
         self
     }
 
     pub fn build<S: Into<String>>(self, name: S, cfg: BridgeConfig) -> Result<Bridge, Error> {
-        let base_dir = match self.base {
+        let run_dir = match self.run_dir {
             Some(base) => base,
-            None => std::env::current_dir()?,
+            None => {
+                let dir = std::env::temp_dir();
+                tracing::info!("runtime directory not set, using {}", dir.display());
+                dir
+            }
         };
 
-        if !base_dir.exists() {
-            std::fs::create_dir_all(&base_dir)?;
+        if !run_dir.exists() {
+            std::fs::create_dir_all(&run_dir)?;
         }
 
-        let vhost_socket_path = base_dir.join("vhost").with_extension("sock");
-        let ctrl_socket_path = base_dir.join("ctrl").with_extension("sock");
+        let data_dir = match self.data_dir {
+            Some(base) => base,
+            None => {
+                let dir = std::env::current_dir()?;
+                tracing::info!("data directory not set, using {}", dir.display());
+                dir
+            }
+        };
+
+        if !data_dir.exists() {
+            std::fs::create_dir_all(&data_dir)?;
+        }
+
+        let vhost_socket_path = run_dir.join("vhost").with_extension("sock");
+        let ctrl_socket_path = run_dir.join("ctrl").with_extension("sock");
 
         Ok(Bridge {
             name: name.into(),
@@ -96,6 +128,7 @@ impl BridgeBuilder {
             ctrl_socket_path,
             pcap: self.pcap,
             cfg,
+            data_dir,
         })
     }
 }
@@ -146,7 +179,9 @@ impl Bridge {
         ))
     }
 
-    /// Starts the bridge, binding a new signalfd as required
+    /// Helper function to run the bridge, binding a new signalfd to intercept SIGTERM and SIGINT
+    ///
+    /// After the signalfd is created, calls run()
     pub fn start(self) -> Result<(), Error> {
         let mut mask = SigSet::empty();
         mask.add(Signal::SIGTERM);
@@ -160,6 +195,10 @@ impl Bridge {
         Ok(())
     }
 
+    /// Runs the bridge using the provided signalfd to watch for pre-configured signals
+    ///
+    /// ### Arguments
+    /// * `sfd` - Signal File Descriptor
     pub fn run(mut self, sfd: SignalFd) -> Result<(), Error> {
         const TOKEN_VHOST: Token = Token(0);
         const TOKEN_SIGNAL: Token = Token(1);
@@ -181,7 +220,7 @@ impl Bridge {
 
         // spawn thread to receive messages/packets
         let router = Router::builder()
-            .register_wans(&self.cfg.wan)?
+            .register_wans(&self.cfg.wan, &self.data_dir)?
             .routing_table(&self.cfg.router.table)
             .register_l4_proto_handler(IcmpHandler::default())
             .register_l4_proto_handler(udp_handler)

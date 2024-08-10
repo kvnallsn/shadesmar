@@ -3,7 +3,7 @@
 pub mod handler;
 pub mod table;
 
-use std::{collections::HashMap, net::IpAddr, sync::Arc};
+use std::{collections::HashMap, net::IpAddr, path::Path, sync::Arc};
 
 use flume::{Receiver, Sender};
 use serde::{Deserialize, Serialize};
@@ -23,7 +23,7 @@ pub use crate::net::{
 use self::handler::ProtocolHandler;
 
 use super::{
-    wan::{TunTap, UdpDevice, WanStats, WgDevice},
+    wan::{PcapDevice, TunTap, UdpDevice, WanStats, WgDevice},
     NetworkError,
 };
 
@@ -134,8 +134,21 @@ impl RouterBuilder {
     ///
     /// ### Arguments
     /// * `wans` - Upstream providers for unknown/non-local packets
-    pub fn register_wans(mut self, wans: &[WanConfig]) -> Result<Self, NetworkError> {
+    /// * `data_dir` - Path to data directory to store any wan-persistent files
+    pub fn register_wans(
+        mut self,
+        wans: &[WanConfig],
+        data_dir: &Path,
+    ) -> Result<Self, NetworkError> {
         let parse_wan = |cfg: &WanConfig| match &cfg.device {
+            WanDevice::Pcap => {
+                // generate a name for the pcap file
+                let ts = jiff::Timestamp::now().as_second();
+                let file = format!("capture_{}_{ts}", cfg.name);
+                let file = data_dir.join(file).with_extension("pcap");
+                let wan = PcapDevice::new(&cfg.name, &file);
+                Ok(Box::new(wan) as Box<dyn Wan>)
+            }
             WanDevice::Tap(opts) => {
                 let wan = TunTap::create_tap(&opts.device)?;
                 Ok::<Box<dyn Wan>, NetworkError>(Box::new(wan) as Box<dyn Wan>)

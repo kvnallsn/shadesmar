@@ -13,6 +13,7 @@ boringtun = "0.6.0"
 dhcproto = "0.11.0"
 flume = { workspace = true }
 ip_network_table-deps-treebitmap = "0.5.0"
+jiff = { workspace = true }
 mio = { workspace = true }
 nix = { workspace = true }
 shadesmar-net = { path = "../net" }

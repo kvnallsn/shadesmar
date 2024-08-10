@@ -1,5 +1,6 @@
 //! Various WAN providers
 
+mod pcap;
 mod tap;
 mod udp;
 mod wireguard;
@@ -12,6 +13,7 @@ use std::sync::{
 use shadesmar_net::Ipv4Packet;
 
 pub use self::{
+    pcap::PcapDevice,
     tap::TunTap,
     udp::UdpDevice,
     wireguard::{WgConfig, WgDevice},

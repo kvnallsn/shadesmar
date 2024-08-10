@@ -40,6 +40,9 @@ pub struct WanConfig {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum WanDevice {
+    /// Pcap device (drops all packets)
+    Pcap,
+
     /// A generic tap device
     Tap(TapConfig),
 

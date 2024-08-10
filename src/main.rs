@@ -27,6 +27,10 @@ pub enum Command {
     Install {
         /// Path to network configuration file
         config: PathBuf,
+
+        /// Rename the network on installation (default network name is the name of the file)
+        #[clap(short, long)]
+        name: Option<String>,
     },
 
     /// Uninstalls (optionally purges) a network configuration
