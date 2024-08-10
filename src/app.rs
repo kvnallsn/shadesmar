@@ -3,6 +3,7 @@
 mod pcap;
 
 use std::{
+    collections::BinaryHeap,
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -312,7 +313,13 @@ impl App {
                     "Name", "Type", "TX", "RX"
                 );
                 print_separator!();
-                for (idx, (ty, tx, rx)) in router.wan_stats {
+                for (idx, (ty, tx, rx)) in router
+                    .wan_stats
+                    .into_iter()
+                    .collect::<BinaryHeap<_>>()
+                    .into_iter()
+                    .rev()
+                {
                     let tx = human_bytes!(tx);
                     let rx = human_bytes!(rx);
                     println!("| {idx:<25} | {ty:<16} | {tx:>13} | {rx:>13} |");
@@ -324,7 +331,13 @@ impl App {
                 print_separator!();
                 println!("| {:^20} | {:^16} |", "Destination", "Via");
                 print_separator!();
-                for (net, idx) in router.route_table {
+                for (net, idx) in router
+                    .route_table
+                    .into_iter()
+                    .collect::<BinaryHeap<_>>()
+                    .into_iter()
+                    .rev()
+                {
                     let net = net.to_string();
                     println!("| {net:<20} | {idx:<16} |");
                 }
