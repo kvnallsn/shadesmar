@@ -60,7 +60,7 @@ pub enum Command {
     },
 
     /// Adds a new route to the routing table
-    AddRoute {
+    RouteAdd {
         /// Name of network for which to add route
         network: String,
 
@@ -72,12 +72,21 @@ pub enum Command {
     },
 
     /// Deletes a route from the routing table
-    DeleteRoute {
+    RouteDelete {
         /// Name of network for which to add route
         network: String,
 
         /// Destination network / subnet to add
         route: Ipv4Network,
+    },
+
+    /// Stops a running WAN device
+    WanStop {
+        /// Name of network for which WAN device is assigned
+        network: String,
+
+        /// Name of wan device to stop
+        wan: String,
     },
 
     /// Stops a (daemonized) shadesmar network

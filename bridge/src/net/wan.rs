@@ -5,11 +5,16 @@ mod tap;
 mod udp;
 mod wireguard;
 
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+use std::{
+    os::unix::thread::JoinHandleExt,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread::JoinHandle,
 };
 
+use nix::sys::signal::Signal;
 use shadesmar_net::Ipv4Packet;
 
 pub use self::{
@@ -20,6 +25,12 @@ pub use self::{
 };
 
 use super::{router::RouterTx, NetworkError};
+
+pub struct WanHandle {
+    name: String,
+    thread: JoinHandle<()>,
+    tx: Box<dyn WanTx>,
+}
 
 /// Represents statistics for a WAN device
 ///
@@ -101,28 +112,47 @@ where
     /// Return value: (tx, rx)
     fn stats(&self) -> WanStats;
 
-    fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError>;
+    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError>;
 
     fn run(self: Box<Self>, router: RouterTx) -> Result<(), NetworkError>;
 
-    fn spawn(self: Box<Self>, router: RouterTx) -> Result<Box<dyn WanHandle>, NetworkError> {
-        let handle = self.as_wan_handle()?;
+    fn spawn(self: Box<Self>, router: RouterTx) -> Result<WanHandle, NetworkError> {
+        let tx = self.tx()?;
+        let name = self.name().to_owned();
 
-        std::thread::Builder::new()
-            .name(String::from("wan-thread"))
+        let thread = std::thread::Builder::new()
+            .name(format!("wan-{}", self.name()))
             .spawn(move || match self.run(router) {
                 Ok(_) => tracing::trace!("wan thread exited successfully"),
                 Err(error) => tracing::warn!(?error, "unable to run wan thread"),
             })?;
 
-        Ok(handle)
+        Ok(WanHandle { name, thread, tx })
     }
 }
 
-pub trait WanHandle: Send + Sync {
-    /// Returns the name of this WAN device
-    fn name(&self) -> &str;
-
+pub trait WanTx: Send + Sync {
     /// Writes a packet to the upstream device
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError>;
+}
+
+impl WanHandle {
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
+        if !self.thread.is_finished() {
+            self.tx.write(pkt)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn stop(&self) -> Result<(), NetworkError> {
+        tracing::debug!("attempting to stop wan thread");
+        let tid = self.thread.as_pthread_t();
+        nix::sys::pthread::pthread_kill(tid, Signal::SIGTERM)?;
+        Ok(())
+    }
 }

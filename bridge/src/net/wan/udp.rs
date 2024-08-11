@@ -11,7 +11,7 @@ use shadesmar_net::Ipv4Packet;
 
 use crate::net::{router::RouterTx, NetworkError};
 
-use super::{Wan, WanHandle, WanStats};
+use super::{Wan, WanStats, WanTx};
 
 pub struct UdpDevice {
     name: String,
@@ -21,7 +21,6 @@ pub struct UdpDevice {
 }
 
 pub struct UdpDeviceHandle {
-    name: String,
     sock: RawFd,
     dests: Vec<SocketAddr>,
 }
@@ -53,9 +52,8 @@ where
         self.stats.clone()
     }
 
-    fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError> {
+    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
         let handle = UdpDeviceHandle {
-            name: self.name.clone(),
             sock: self.sock.as_raw_fd(),
             dests: self.dests.clone(),
         };
@@ -81,11 +79,7 @@ where
     }
 }
 
-impl WanHandle for UdpDeviceHandle {
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
+impl WanTx for UdpDeviceHandle {
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
         let iov = [IoSlice::new(&pkt.as_bytes())];
 

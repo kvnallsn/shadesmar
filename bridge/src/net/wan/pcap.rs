@@ -11,7 +11,7 @@ use shadesmar_net::Ipv4Packet;
 
 use crate::net::{router::RouterTx, NetworkError};
 
-use super::{Wan, WanHandle, WanStats};
+use super::{Wan, WanStats, WanTx};
 
 /// WAN device to capture and save traffic into a PCAP file
 ///
@@ -24,7 +24,6 @@ pub struct PcapDevice {
 }
 
 pub struct PcapDeviceHandle {
-    name: String,
     writer: Mutex<PcapWriter<File>>,
     stats: WanStats,
 }
@@ -56,7 +55,7 @@ impl Wan for PcapDevice {
         self.stats.clone()
     }
 
-    fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError> {
+    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
         let file = File::options()
             .create(true)
             .write(true)
@@ -76,7 +75,6 @@ impl Wan for PcapDevice {
 
         let writer = PcapWriter::with_header(file, header)?;
         Ok(Box::new(PcapDeviceHandle {
-            name: self.name.clone(),
             writer: Mutex::new(writer),
             stats: self.stats.clone(),
         }))
@@ -88,11 +86,7 @@ impl Wan for PcapDevice {
     }
 }
 
-impl WanHandle for PcapDeviceHandle {
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
+impl WanTx for PcapDeviceHandle {
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
         self.stats.tx_add(pkt.len());
         let mut wr = self.writer.lock();

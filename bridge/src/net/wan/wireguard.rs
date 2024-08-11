@@ -18,6 +18,8 @@ use boringtun::{
 use flume::{Receiver, Sender};
 use mio::{net::UdpSocket, unix::SourceFd, Events, Interest, Poll, Token, Waker};
 use nix::sys::{
+    signal::{SigSet, Signal},
+    signalfd::{SfdFlags, SignalFd},
     time::TimeSpec,
     timerfd::{ClockId, Expiration, TimerFd, TimerFlags, TimerSetTimeFlags},
 };
@@ -26,11 +28,12 @@ use shadesmar_net::{nat::NatTable, Ipv4Header, Ipv4Packet};
 
 use crate::net::{router::RouterTx, NetworkError};
 
-use super::{Wan, WanHandle, WanStats};
+use super::{Wan, WanStats, WanTx};
 
 const TOKEN_WAKER: Token = Token(0);
 const TOKEN_UDP: Token = Token(1);
 const TOKEN_TIMER: Token = Token(2);
+const TOKEN_SFD: Token = Token(3);
 
 const WG_BUF_SZ: usize = 1600;
 
@@ -70,7 +73,6 @@ pub struct WgDevice {
 /// with a WireGuard WAN device.
 #[derive(Clone)]
 pub struct WgHandle {
-    name: String,
     tx: Sender<Ipv4Packet>,
     waker: Arc<Waker>,
 }
@@ -122,7 +124,6 @@ impl WgDevice {
         let stats = WanStats::new(format!("WireGuard"));
         let (tx, rx) = flume::unbounded();
         let handle = WgHandle {
-            name: name.clone(),
             tx,
             waker: Arc::new(waker),
         };
@@ -238,7 +239,7 @@ impl Wan for WgDevice {
         self.stats.clone()
     }
 
-    fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError> {
+    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
         Ok(Box::new(self.handle.clone()))
     }
 
@@ -254,6 +255,12 @@ impl Wan for WgDevice {
             TimerSetTimeFlags::empty(),
         )?;
 
+        let mut sigset = SigSet::empty();
+        sigset.add(Signal::SIGTERM);
+        sigset.thread_block()?;
+
+        let sfd = SignalFd::with_flags(&sigset, SfdFlags::SFD_NONBLOCK)?;
+
         self.poll
             .registry()
             .register(&mut sock, TOKEN_UDP, Interest::READABLE)?;
@@ -261,6 +268,12 @@ impl Wan for WgDevice {
         self.poll.registry().register(
             &mut SourceFd(&timer.as_fd().as_raw_fd()),
             TOKEN_TIMER,
+            Interest::READABLE,
+        )?;
+
+        self.poll.registry().register(
+            &mut SourceFd(&sfd.as_raw_fd()),
+            TOKEN_SFD,
             Interest::READABLE,
         )?;
 
@@ -279,7 +292,7 @@ impl Wan for WgDevice {
         let mut udp_buf = [0u8; WG_BUF_SZ];
         let mut wg_buf = [0u8; WG_BUF_SZ];
         let mut events = Events::with_capacity(10);
-        while let Ok(_) = self.poll.poll(&mut events, None) {
+        'event: while let Ok(_) = self.poll.poll(&mut events, None) {
             for event in &events {
                 match event.token() {
                     TOKEN_UDP => {
@@ -331,6 +344,24 @@ impl Wan for WgDevice {
                         let action = self.tun.update_timers(&mut wg_buf);
                         self.handle_tun_result(action, &router, &sock)?;
                     }
+                    TOKEN_SFD => match sfd.read_signal() {
+                        Err(error) => tracing::warn!(%error, "unable to read signal"),
+                        Ok(sig) => match sig {
+                            None => tracing::debug!("no signal found but sfd was triggered"),
+                            Some(sig) => match Signal::try_from(sig.ssi_signo as i32) {
+                                Err(error) => {
+                                    tracing::warn!(%error, "received unknown signal ({})", sig.ssi_signo)
+                                }
+                                Ok(sig) => match sig {
+                                    Signal::SIGTERM => {
+                                        tracing::debug!("[wg] caught sigterm, exiting");
+                                        break 'event;
+                                    }
+                                    _ => { /* ignore other signals */ }
+                                },
+                            },
+                        },
+                    },
                     Token(token) => tracing::warn!(?token, "[wg] unhandled mio token"),
                 }
             }
@@ -342,11 +373,7 @@ impl Wan for WgDevice {
     }
 }
 
-impl WanHandle for WgHandle {
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
+impl WanTx for WgHandle {
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
         self.tx.send(pkt)?;
         self.waker.wake()?;

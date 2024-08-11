@@ -72,7 +72,7 @@ pub struct RouterHandle {
     wan_stats: HashMap<String, WanStats>,
 
     /// Currently active WAN connections for the router
-    wans: Arc<RwLock<Vec<Box<dyn WanHandle>>>>,
+    wans: Arc<RwLock<Vec<WanHandle>>>,
 }
 
 /// A Layer 3 IPv4 Router
@@ -87,7 +87,7 @@ pub struct Router {
     port: usize,
 
     /// Currently active WAN connections for the router
-    wans: Arc<RwLock<Vec<Box<dyn WanHandle>>>>,
+    wans: Arc<RwLock<Vec<WanHandle>>>,
 
     /// WAN routing table, maps IPv4 cidrs to wan index
     table: ArcRouteTable,
@@ -592,6 +592,25 @@ impl RouterHandle {
     /// * `route` - Route to delete
     pub fn del_route(&self, route: Ipv4Network) -> Result<(), NetworkError> {
         self.route_table.remove_route(route);
+        Ok(())
+    }
+
+    /// Adds a new WAN connection
+    pub fn add_wan(&self) -> Result<(), NetworkError> {
+        Ok(())
+    }
+
+    /// Deletes a WAN connection
+    pub fn del_wan<S: AsRef<str>>(&self, name: S) -> Result<(), NetworkError> {
+        let name = name.as_ref();
+        tracing::info!("stopping wan device {name}");
+
+        if let Some(wan) = self.wans.read().iter().position(|wan| wan.name() == name) {
+            if let Some(wan) = self.wans.read().get(wan) {
+                wan.stop()?;
+            }
+        }
+
         Ok(())
     }
 }

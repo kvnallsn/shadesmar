@@ -19,7 +19,7 @@ use nix::{
 };
 use shadesmar_net::{types::MacAddress, Ipv4Packet};
 
-use super::{Wan, WanHandle, WanStats};
+use super::{Wan, WanStats, WanTx};
 
 /// Maximum number of events mio can processes at one time
 const MAX_EVENTS_CAPACITY: usize = 10;
@@ -55,7 +55,6 @@ pub struct TunTap {
 }
 
 pub struct TunTapHandle {
-    name: String,
     tx: Sender<Ipv4Packet>,
     waker: Arc<Waker>,
 }
@@ -172,7 +171,7 @@ impl Wan for TunTap {
         self.stats.clone()
     }
 
-    fn as_wan_handle(&self) -> Result<Box<dyn WanHandle>, NetworkError> {
+    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
         let waker = Waker::new(self.poll.registry(), TOKEN_WRITE)?;
         self.poll.registry().register(
             &mut SourceFd(&self.fd.as_raw_fd()),
@@ -181,7 +180,6 @@ impl Wan for TunTap {
         )?;
 
         let handle = TunTapHandle {
-            name: self.name.clone(),
             tx: self.tx.clone(),
             waker: Arc::new(waker),
         };
@@ -226,11 +224,7 @@ impl Wan for TunTap {
     }
 }
 
-impl WanHandle for TunTapHandle {
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
+impl WanTx for TunTapHandle {
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
         self.tx.send(pkt).ok();
         self.waker.wake().ok();

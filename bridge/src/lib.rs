@@ -363,7 +363,10 @@ impl Bridge {
                     router.del_route(route)?;
                     strm.send(CtrlResponse::Pong)?;
                 }
-                CtrlRequest::RemoveWan(_name) => (),
+                CtrlRequest::RemoveWan(name) => {
+                    router.del_wan(name)?;
+                    strm.send(CtrlResponse::Pong)?;
+                }
             }
         }
 

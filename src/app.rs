@@ -133,12 +133,13 @@ impl App {
             Command::Status { network } => self.status(network)?,
             Command::Netflow { network } => self.pcap(network)?,
             Command::Stop { network, force } => self.stop(network, force)?,
-            Command::AddRoute {
+            Command::RouteAdd {
                 network,
                 route,
                 wan,
             } => self.add_route(network, route, wan)?,
-            Command::DeleteRoute { network, route } => self.del_route(network, route)?,
+            Command::RouteDelete { network, route } => self.del_route(network, route)?,
+            Command::WanStop { network, wan } => self.stop_wan(network, wan)?,
         };
         Ok(())
     }
@@ -447,6 +448,23 @@ impl App {
 
         let mut sock = network.ctrl_socket()?;
         sock.send(CtrlRequest::DelRoute(route))?;
+        sock.recv()?;
+
+        Ok(())
+    }
+
+    /// Stops a WAN device
+    ///
+    /// Once a WAN device has been stopped, it cannot be started again
+    ///
+    /// ### Arguments
+    /// * `network` - Network for which the WAN device is assigned
+    /// * `wan` - Name of WAN device to stop
+    fn stop_wan(self, network: String, wan: String) -> anyhow::Result<()> {
+        let network = self.open_network(network)?;
+
+        let mut sock = network.ctrl_socket()?;
+        sock.send(CtrlRequest::RemoveWan(wan))?;
         sock.recv()?;
 
         Ok(())
