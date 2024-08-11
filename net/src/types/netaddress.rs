@@ -44,6 +44,11 @@ impl Ipv4Network {
         }
     }
 
+    /// Returns true if this is the "default" address (i.e. 0.0.0.0/0)
+    pub fn is_default(&self) -> bool {
+        self.ip.is_unspecified() && self.mask.is_unspecified()
+    }
+
     /// Returns the subnet mask of this network
     pub fn subnet_mask(&self) -> Ipv4Addr {
         self.mask

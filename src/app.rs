@@ -3,7 +3,6 @@
 mod pcap;
 
 use std::{
-    collections::BinaryHeap,
     fs::File,
     io::{Read, Write},
     path::{Path, PathBuf},
@@ -200,6 +199,24 @@ impl App {
         Ok(confirmation)
     }
 
+    /// Parses a response from the control server
+    ///
+    /// Receives a message from the socket and attempts to deserialize it (if Success)
+    /// or converts it into an error (if Failure)
+    ///
+    /// ### Arguments
+    /// * `sock` - socket from which to read response
+    fn handle_ctrl_result<D>(&self, sock: &mut CtrlClientStream) -> anyhow::Result<D>
+    where
+        D: DeserializeOwned,
+    {
+        match sock.recv()? {
+            Some(CtrlResponse::Success(obj)) => Ok(obj),
+            Some(CtrlResponse::Failed(msg)) => Err(anyhow::anyhow!("{msg}")),
+            None => Err(anyhow::anyhow!("empty control response message")),
+        }
+    }
+
     /// Installs a shadesmar network configuration file
     ///
     /// # Arguments
@@ -363,7 +380,11 @@ impl App {
         table!(header; bold; ("Destination", 20), ("Via", 20), ("Packet Count", 30));
         table!(sep);
         for (net, (wan, num_packets)) in router.route_table.into_iter() {
-            let net = net.to_string();
+            let net = match net.is_default() {
+                true => String::from("default"),
+                false => net.to_string(),
+            };
+
             let wan = match router.wan_stats.get(&wan) {
                 None => red.apply_to("wan missing".to_owned()),
                 Some((true, _, _, _)) => green.apply_to(wan),
@@ -438,17 +459,6 @@ impl App {
         Ok(())
     }
 
-    fn handle_ctrl_result<D>(&self, sock: &mut CtrlClientStream) -> anyhow::Result<D>
-    where
-        D: DeserializeOwned,
-    {
-        match sock.recv()? {
-            Some(CtrlResponse::Success(obj)) => Ok(obj),
-            Some(CtrlResponse::Failed(msg)) => Err(anyhow::anyhow!("{msg}")),
-            None => Err(anyhow::anyhow!("empty control response message")),
-        }
-    }
-
     /// Adds a new route to the routing table
     ///
     /// ### Arguments
@@ -472,6 +482,14 @@ impl App {
     /// * `route` - Destination network/subnet to delete
     fn del_route(self, network: String, route: Ipv4Network) -> anyhow::Result<()> {
         let network = self.open_network(network)?;
+
+        if route.is_default() {
+            if !self
+                .prompt_confirm("This is the default route, are you sure you want to remove it?")?
+            {
+                return Err(anyhow::anyhow!("user cancelled operation"));
+            }
+        }
 
         let mut sock = network.ctrl_socket()?;
         sock.send(CtrlRequest::DelRoute(route))?;
