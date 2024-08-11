@@ -44,9 +44,13 @@ impl Ipv4Network {
         }
     }
 
-    /// Returns true if this is the "default" address (i.e. 0.0.0.0/0)
+    /// Returns true if this is the "default" address
+    ///
+    /// The default address has a subnet mask of 0 (i.e., 0.0.0.0). It does
+    /// not matter what the ip component is set to because the 0 subnet mask
+    /// indicates all addresses
     pub fn is_default(&self) -> bool {
-        self.ip.is_unspecified() && self.mask.is_unspecified()
+        self.mask.is_unspecified()
     }
 
     /// Returns the subnet mask of this network
