@@ -345,13 +345,15 @@ impl Bridge {
             tracing::debug!(message = ?msg, "received control message");
             match msg {
                 CtrlRequest::Stop => return Ok(ControlAction::Stop),
-                CtrlRequest::ConnectTap(socket) => switch.register_tap(socket),
+                CtrlRequest::ConnectTap(socket) => {
+                    switch.register_tap(socket);
+                    strm.send(CtrlResponse::ok())?;
+                }
                 CtrlRequest::Status => {
                     let switch_status = switch.get_status()?;
                     let router_status = router.status();
 
                     strm.send(CtrlResponse::Success((switch_status, router_status)))?;
-                    //strm.send(CtrlResponse::Status(switch_status, router_status))?;
                 }
                 CtrlRequest::Ping => {
                     strm.send(CtrlResponse::Success(()))?;
@@ -362,9 +364,7 @@ impl Bridge {
                         Err(error) => CtrlResponse::fail(error.to_string()),
                     };
 
-                    if let Err(error) = strm.send(resp) {
-                        tracing::warn!(%error, "unable to send control response to client");
-                    }
+                    strm.send(resp)?;
                 }
                 CtrlRequest::DelRoute(route) => {
                     let resp = match router.del_route(route) {
@@ -372,9 +372,7 @@ impl Bridge {
                         Err(error) => CtrlResponse::fail(error.to_string()),
                     };
 
-                    if let Err(error) = strm.send(resp) {
-                        tracing::warn!(%error, "unable to send control response to client");
-                    }
+                    strm.send(resp)?;
                 }
                 CtrlRequest::RemoveWan(name) => {
                     let resp = match router.del_wan(name) {
@@ -382,9 +380,7 @@ impl Bridge {
                         Err(error) => CtrlResponse::fail(error.to_string()),
                     };
 
-                    if let Err(error) = strm.send(resp) {
-                        tracing::warn!(%error, "unable to send control response to client");
-                    }
+                    strm.send(resp)?;
                 }
             }
         }

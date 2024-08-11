@@ -110,7 +110,7 @@ impl CtrlClientStream {
         }
     }
 
-    pub fn recv<T: DeserializeOwned>(&mut self) -> Result<Option<CtrlResponse<T>>, Error> {
+    pub fn recv<T: DeserializeOwned>(&mut self) -> Result<T, Error> {
         // [0x01 | len | buf]
         let mut hdr = [0u8; 5];
 
@@ -120,9 +120,10 @@ impl CtrlClientStream {
         let mut data = vec![0u8; sz as usize];
         self.read(&mut data)?;
 
-        let msg: CtrlResponse<T> = bincode::deserialize(&data)?;
-
-        Ok(Some(msg))
+        match bincode::deserialize(&data)? {
+            CtrlResponse::Success(obj) => Ok(obj),
+            CtrlResponse::Failed(msg) => Err(Error::Other(msg.into())),
+        }
     }
 
     pub fn send(&mut self, msg: CtrlRequest) -> Result<(), Error> {
@@ -141,6 +142,17 @@ impl CtrlClientStream {
         tracing::trace!("wrote {sz} bytes to server");
 
         Ok(())
+    }
+
+    /// Sends a CtrlRequest message and waits for a response
+    ///
+    /// This is a convience method for calling `send()` immediately followed by `recv()`
+    ///
+    /// ### Arguments
+    /// * `msg` - Control Message to send to the server
+    pub fn request<D: DeserializeOwned>(&mut self, msg: CtrlRequest) -> Result<D, Error> {
+        self.send(msg)?;
+        self.recv()
     }
 }
 

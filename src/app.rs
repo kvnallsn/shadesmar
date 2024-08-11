@@ -12,9 +12,8 @@ use anyhow::Context;
 use console::Style;
 use dialoguer::{theme::Theme, Confirm};
 use pcap::handle_pcap;
-use serde::de::DeserializeOwned;
 use shadesmar_bridge::{
-    ctrl::{CtrlClientStream, CtrlRequest, CtrlResponse},
+    ctrl::{CtrlClientStream, CtrlRequest},
     net::{router::RouterStatus, switch::SwitchStatus},
     Bridge,
 };
@@ -199,24 +198,6 @@ impl App {
         Ok(confirmation)
     }
 
-    /// Parses a response from the control server
-    ///
-    /// Receives a message from the socket and attempts to deserialize it (if Success)
-    /// or converts it into an error (if Failure)
-    ///
-    /// ### Arguments
-    /// * `sock` - socket from which to read response
-    fn handle_ctrl_result<D>(&self, sock: &mut CtrlClientStream) -> anyhow::Result<D>
-    where
-        D: DeserializeOwned,
-    {
-        match sock.recv()? {
-            Some(CtrlResponse::Success(obj)) => Ok(obj),
-            Some(CtrlResponse::Failed(msg)) => Err(anyhow::anyhow!("{msg}")),
-            None => Err(anyhow::anyhow!("empty control response message")),
-        }
-    }
-
     /// Installs a shadesmar network configuration file
     ///
     /// # Arguments
@@ -342,15 +323,12 @@ impl App {
     fn status(self, network: String) -> anyhow::Result<()> {
         let network = self.open_network(network)?;
 
-        let mut sock = network.ctrl_socket()?;
-        sock.send(CtrlRequest::Status)?;
-
         let bold = Style::new().bold();
         let green = Style::new().green();
         let red = Style::new().red();
 
-        let (switch, router) =
-            self.handle_ctrl_result::<(SwitchStatus, RouterStatus)>(&mut sock)?;
+        let mut sock = network.ctrl_socket()?;
+        let (switch, router) = sock.request::<(SwitchStatus, RouterStatus)>(CtrlRequest::Status)?;
 
         println!("Router Status:");
         //table!();
@@ -452,7 +430,7 @@ impl App {
         let tap = network.tap_socket();
 
         let mut sock = network.ctrl_socket()?;
-        sock.send(CtrlRequest::ConnectTap(tap.clone()))?;
+        sock.request::<()>(CtrlRequest::ConnectTap(tap.clone()))?;
 
         handle_pcap(tap)?;
 
@@ -469,8 +447,7 @@ impl App {
         let network = self.open_network(network)?;
 
         let mut sock = network.ctrl_socket()?;
-        sock.send(CtrlRequest::AddRoute(route, wan))?;
-        self.handle_ctrl_result::<()>(&mut sock)?;
+        sock.request::<()>(CtrlRequest::AddRoute(route, wan))?;
 
         Ok(())
     }
@@ -492,8 +469,7 @@ impl App {
         }
 
         let mut sock = network.ctrl_socket()?;
-        sock.send(CtrlRequest::DelRoute(route))?;
-        self.handle_ctrl_result::<()>(&mut sock)?;
+        sock.request::<()>(CtrlRequest::DelRoute(route))?;
 
         Ok(())
     }
@@ -509,8 +485,7 @@ impl App {
         let network = self.open_network(network)?;
 
         let mut sock = network.ctrl_socket()?;
-        sock.send(CtrlRequest::RemoveWan(wan))?;
-        self.handle_ctrl_result::<()>(&mut sock)?;
+        sock.request::<()>(CtrlRequest::RemoveWan(wan))?;
 
         Ok(())
     }
