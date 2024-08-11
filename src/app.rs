@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::Context;
+use console::{Color, Style};
 use dialoguer::{theme::Theme, Confirm};
 use pcap::handle_pcap;
 use shadesmar_bridge::{
@@ -47,9 +48,28 @@ macro_rules! human_bytes {
     }};
 }
 
-macro_rules! print_separator {
-    () => {
-        println!("{:-<80}", "-")
+macro_rules! table {
+    (top) => {
+        println!("\u{250C}{:\u{2500}<78}\u{2510}", "\u{2500}")
+    };
+    (bottom) => {
+        println!("\u{2514}{:\u{2500}<78}\u{2518}", "\u{2500}")
+    };
+    (header; $style:expr; $(($text:expr,$width:expr)),+) => {{
+        $(print!("\u{2502} {:^width$} ", $style.apply_to($text), width = $width);)+
+        println!("\u{2502}");
+    }};
+    (row; $(($text:expr,$width:expr,$align:literal)),+) => {
+        $(match $align {
+            ">" => print!("\u{2502} {:>width$} ", $text, width = $width),
+            "<" => print!("\u{2502} {:<width$} ", $text, width = $width),
+            "^" => print!("\u{2502} {:^width$} ", $text, width = $width),
+            _ => print!("\u{2502} {:width$} ", $text, width = $width),
+        };)+
+        println!("\u{2502}");
+    };
+    (sep) => {
+        println!("\u{251C}{:\u{2500}<78}\u{2524}", "\u{2500}")
     };
 }
 
@@ -306,21 +326,20 @@ impl App {
         let mut sock = network.ctrl_socket()?;
         sock.send(CtrlRequest::Status)?;
 
+        let bold = Style::new().bold();
+
         match sock.recv()? {
             Some(CtrlResponse::Status(switch, router)) => {
                 println!("Router Status:");
-                print_separator!();
+                //table!();
                 println!("MAC:      {}", router.mac);
                 println!("Network:  {}", router.network);
 
                 println!("");
                 println!("WAN Interfaces:");
-                print_separator!();
-                println!(
-                    "| {:^25} | {:^16} | {:^13} | {:^13} |",
-                    "Name", "Type", "TX", "RX"
-                );
-                print_separator!();
+                table!(top);
+                table!(header; bold; ("Name", 25), ("Type", 16), ("TX", 13), ("RX", 13));
+                table!(sep);
                 for (idx, (ty, tx, rx)) in router
                     .wan_stats
                     .into_iter()
@@ -330,18 +349,15 @@ impl App {
                 {
                     let tx = human_bytes!(tx);
                     let rx = human_bytes!(rx);
-                    println!("| {idx:<25} | {ty:<16} | {tx:>13} | {rx:>13} |");
+                    table!(row; (idx,25,"<"), (ty,16,"<"), (tx,13,">"), (rx,13,">"));
                 }
-                print_separator!();
+                table!(bottom);
 
                 println!("");
                 println!("Route Table:");
-                print_separator!();
-                println!(
-                    "| {:^20} | {:^16} | {:^14} |",
-                    "Destination", "Via", "Packet Count"
-                );
-                print_separator!();
+                table!(top);
+                table!(header; bold; ("Destination", 20), ("Via", 16), ("Packet Count", 34));
+                table!(sep);
                 for (net, (idx, num_packets)) in router
                     .route_table
                     .into_iter()
@@ -350,17 +366,17 @@ impl App {
                     .rev()
                 {
                     let net = net.to_string();
-                    println!("| {net:<20} | {idx:<16} | {num_packets:<14} |");
+                    table!(row; (net,20,"<"), (idx, 16, "<"), (num_packets, 34, "<"));
                 }
-                print_separator!();
+                table!(bottom);
 
                 println!("");
                 println!("Switch Status:");
-                print_separator!();
-                println!("LAN:      {}", human_bytes!(switch.pkt_stats));
-                print_separator!();
-                println!("| {:^8} | {:^10} | MACs", "Port", "Type");
-                print_separator!();
+                //table!();
+                //println!("LAN:      {}", human_bytes!(switch.pkt_stats));
+                table!(top);
+                table!(header; bold; ("Port", 8), ("Type", 10), ("MACs", 52));
+                table!(sep);
                 for (idx, port) in switch.ports.iter().enumerate() {
                     let macs = port
                         .macs
@@ -373,9 +389,9 @@ impl App {
                         true => String::from("-"),
                     };
 
-                    println!("| {idx:>8} | {:<10} | {macs}", port.desc);
+                    table!(row; (idx,8,">"), (port.desc,10, "<"), (macs,52,"<"));
                 }
-                print_separator!();
+                table!(bottom);
             }
             Some(_) => tracing::warn!("requested, status, received non-status response"),
             None => tracing::warn!("requested status, did not receive a response"),
