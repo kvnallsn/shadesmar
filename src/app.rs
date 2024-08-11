@@ -345,13 +345,7 @@ impl App {
         table!(top);
         table!(header; bold; ("Name", 18), ("Status", 8), ("Type", 12), ("TX", 13), ("RX", 13));
         table!(sep);
-        for (name, (running, ty, tx, rx)) in router
-            .wan_stats
-            .iter()
-            .collect::<BinaryHeap<_>>()
-            .iter()
-            .rev()
-        {
+        for (name, (running, ty, tx, rx)) in router.wan_stats.iter() {
             let tx = human_bytes!(*tx);
             let rx = human_bytes!(*rx);
             let status = match running {
@@ -368,13 +362,7 @@ impl App {
         table!(top);
         table!(header; bold; ("Destination", 20), ("Via", 20), ("Packet Count", 30));
         table!(sep);
-        for (net, (wan, num_packets)) in router
-            .route_table
-            .into_iter()
-            .collect::<BinaryHeap<_>>()
-            .into_iter()
-            .rev()
-        {
+        for (net, (wan, num_packets)) in router.route_table.into_iter() {
             let net = net.to_string();
             let wan = match router.wan_stats.get(&wan) {
                 None => red.apply_to("wan missing".to_owned()),
@@ -458,7 +446,6 @@ impl App {
             Some(CtrlResponse::Success(obj)) => Ok(obj),
             Some(CtrlResponse::Failed(msg)) => Err(anyhow::anyhow!("{msg}")),
             None => Err(anyhow::anyhow!("empty control response message")),
-            _ => panic!(""),
         }
     }
 

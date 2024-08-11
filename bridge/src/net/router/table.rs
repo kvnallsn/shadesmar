@@ -1,6 +1,10 @@
 //! A simple routing table
 
-use std::{collections::HashMap, net::Ipv4Addr, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    net::Ipv4Addr,
+    sync::Arc,
+};
 
 use ip_network_table_deps_treebitmap::IpLookupTable;
 use parking_lot::RwLock;
@@ -110,7 +114,7 @@ impl RouteTable {
     }
 
     /// Returns a mapping of subnets/prefixes to interface ids
-    pub fn routes(&self) -> HashMap<Ipv4Network, (String, u64)> {
+    pub fn routes(&self) -> BTreeMap<Ipv4Network, (String, u64)> {
         self.table
             .read()
             .iter()

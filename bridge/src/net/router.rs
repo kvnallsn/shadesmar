@@ -3,7 +3,12 @@
 pub mod handler;
 pub mod table;
 
-use std::{collections::HashMap, net::IpAddr, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    net::IpAddr,
+    path::Path,
+    sync::Arc,
+};
 
 use flume::{Receiver, Sender};
 use parking_lot::RwLock;
@@ -116,10 +121,17 @@ pub struct RouterBuilder {
 /// Contains the status of the router, when requested by a control message
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RouterStatus {
+    /// MAC (L2) address of the router
     pub mac: MacAddress,
+
+    /// Network router is responsible for
     pub network: Ipv4Network,
-    pub route_table: HashMap<Ipv4Network, (String, u64)>,
-    pub wan_stats: HashMap<String, (bool, String, u64, u64)>,
+
+    /// Map of routes to WAN connectinos
+    pub route_table: BTreeMap<Ipv4Network, (String, u64)>,
+
+    /// Map of WAN connections to related information
+    pub wan_stats: BTreeMap<String, (bool, String, u64, u64)>,
 }
 
 impl RouterTx {
