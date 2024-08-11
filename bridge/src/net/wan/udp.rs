@@ -30,7 +30,7 @@ impl UdpDevice {
         let name = name.into();
         let sock = UdpSocket::bind("0.0.0.0:0")?;
         let dests = addrs.to_socket_addrs()?.collect::<Vec<_>>();
-        let stats = WanStats::new("UDP");
+        let stats = WanStats::new();
         Ok(Self {
             name,
             sock,
@@ -46,6 +46,10 @@ where
 {
     fn name(&self) -> &str {
         self.name.as_str()
+    }
+
+    fn ty(&self) -> &str {
+        "UDP"
     }
 
     fn stats(&self) -> WanStats {

@@ -41,7 +41,7 @@ impl PcapDevice {
     {
         let name = name.into();
         let path = path.into();
-        let stats = WanStats::new("Pcap");
+        let stats = WanStats::new();
         Self { name, path, stats }
     }
 }
@@ -49,6 +49,10 @@ impl PcapDevice {
 impl Wan for PcapDevice {
     fn name(&self) -> &str {
         self.name.as_str()
+    }
+
+    fn ty(&self) -> &str {
+        "Pcap"
     }
 
     fn stats(&self) -> super::WanStats {

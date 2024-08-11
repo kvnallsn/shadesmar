@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::Context;
-use console::{Color, Style};
+use console::Style;
 use dialoguer::{theme::Theme, Confirm};
 use pcap::handle_pcap;
 use shadesmar_bridge::{
@@ -327,6 +327,8 @@ impl App {
         sock.send(CtrlRequest::Status)?;
 
         let bold = Style::new().bold();
+        let green = Style::new().green();
+        let red = Style::new().red();
 
         match sock.recv()? {
             Some(CtrlResponse::Status(switch, router)) => {
@@ -338,27 +340,32 @@ impl App {
                 println!("");
                 println!("WAN Interfaces:");
                 table!(top);
-                table!(header; bold; ("Name", 25), ("Type", 16), ("TX", 13), ("RX", 13));
+                table!(header; bold; ("Name", 18), ("Status", 8), ("Type", 12), ("TX", 13), ("RX", 13));
                 table!(sep);
-                for (idx, (ty, tx, rx)) in router
+                for (name, (running, ty, tx, rx)) in router
                     .wan_stats
-                    .into_iter()
+                    .iter()
                     .collect::<BinaryHeap<_>>()
-                    .into_iter()
+                    .iter()
                     .rev()
                 {
-                    let tx = human_bytes!(tx);
-                    let rx = human_bytes!(rx);
-                    table!(row; (idx,25,"<"), (ty,16,"<"), (tx,13,">"), (rx,13,">"));
+                    let tx = human_bytes!(*tx);
+                    let rx = human_bytes!(*rx);
+                    let status = match running {
+                        true => green.apply_to("running"),
+                        false => red.apply_to("dead"),
+                    };
+
+                    table!(row; (name,18,"<"), (status,8,"<"), (ty,12,"<"), (tx,13,">"), (rx,13,">"));
                 }
                 table!(bottom);
 
                 println!("");
                 println!("Route Table:");
                 table!(top);
-                table!(header; bold; ("Destination", 20), ("Via", 16), ("Packet Count", 34));
+                table!(header; bold; ("Destination", 20), ("Via", 20), ("Packet Count", 30));
                 table!(sep);
-                for (net, (idx, num_packets)) in router
+                for (net, (wan, num_packets)) in router
                     .route_table
                     .into_iter()
                     .collect::<BinaryHeap<_>>()
@@ -366,7 +373,13 @@ impl App {
                     .rev()
                 {
                     let net = net.to_string();
-                    table!(row; (net,20,"<"), (idx, 16, "<"), (num_packets, 34, "<"));
+                    let wan = match router.wan_stats.get(&wan) {
+                        None => red.apply_to("wan missing".to_owned()),
+                        Some((true, _, _, _)) => green.apply_to(wan),
+                        Some((false, _, _, _)) => red.apply_to(format!("{wan} (dead)")),
+                    };
+
+                    table!(row; (net,20,"<"), (wan, 20, "<"), (num_packets, 30, "<"));
                 }
                 table!(bottom);
 

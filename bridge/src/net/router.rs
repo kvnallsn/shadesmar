@@ -24,7 +24,7 @@ pub use crate::net::{
 use self::handler::ProtocolHandler;
 
 use super::{
-    wan::{PcapDevice, TunTap, UdpDevice, WanStats, WgDevice},
+    wan::{PcapDevice, TunTap, UdpDevice, WgDevice},
     NetworkError,
 };
 
@@ -67,9 +67,6 @@ pub struct RouterHandle {
 
     /// A reference to the router's route table
     route_table: ArcRouteTable,
-
-    /// Information about each registered WAN connection
-    wan_stats: HashMap<String, WanStats>,
 
     /// Currently active WAN connections for the router
     wans: Arc<RwLock<Vec<WanHandle>>>,
@@ -122,7 +119,7 @@ pub struct RouterStatus {
     pub mac: MacAddress,
     pub network: Ipv4Network,
     pub route_table: HashMap<Ipv4Network, (String, u64)>,
-    pub wan_stats: HashMap<String, (String, u64, u64)>,
+    pub wan_stats: HashMap<String, (bool, String, u64, u64)>,
 }
 
 impl RouterTx {
@@ -236,12 +233,6 @@ impl RouterBuilder {
         let table = RouteTable::new(self.table, &self.wans);
         let route_table = Arc::clone(&table);
 
-        let wan_stats = self
-            .wans
-            .iter()
-            .map(|wan| (wan.name().to_owned(), wan.stats()))
-            .collect::<HashMap<String, WanStats>>();
-
         let port = switch.connect(tx.clone());
 
         let mut wans = Vec::with_capacity(self.wans.len());
@@ -256,7 +247,6 @@ impl RouterBuilder {
             mac,
             route_table,
             network,
-            wan_stats,
             wans: Arc::clone(&wans),
         };
 
@@ -544,12 +534,18 @@ impl RouterHandle {
     /// Returns the status of the router
     pub fn status(&self) -> RouterStatus {
         let wan_stats = self
-            .wan_stats
+            .wans
+            .read()
             .iter()
-            .map(|(name, stats)| {
+            .map(|wan| {
                 (
-                    name.to_owned(),
-                    (stats.wan_type().to_owned(), stats.tx(), stats.rx()),
+                    wan.name().to_owned(),
+                    (
+                        wan.is_running(),
+                        wan.ty().to_owned(),
+                        wan.stats_tx(),
+                        wan.stats_rx(),
+                    ),
                 )
             })
             .collect();

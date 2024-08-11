@@ -121,7 +121,7 @@ impl WgDevice {
         let waker = Waker::new(poll.registry(), TOKEN_WAKER)?;
 
         let name = name.into();
-        let stats = WanStats::new(format!("WireGuard"));
+        let stats = WanStats::new();
         let (tx, rx) = flume::unbounded();
         let handle = WgHandle {
             tx,
@@ -233,6 +233,10 @@ impl WgDevice {
 impl Wan for WgDevice {
     fn name(&self) -> &str {
         self.name.as_str()
+    }
+
+    fn ty(&self) -> &str {
+        "WireGuard"
     }
 
     fn stats(&self) -> WanStats {

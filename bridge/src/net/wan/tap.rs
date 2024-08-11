@@ -135,7 +135,7 @@ impl TunTap {
             tx,
             rx: Some(rx),
             mac,
-            stats: WanStats::new("TAP"),
+            stats: WanStats::new(),
         })
     }
 
@@ -165,6 +165,10 @@ impl Debug for TunTap {
 impl Wan for TunTap {
     fn name(&self) -> &str {
         self.name.as_str()
+    }
+
+    fn ty(&self) -> &str {
+        "Tap"
     }
 
     fn stats(&self) -> WanStats {

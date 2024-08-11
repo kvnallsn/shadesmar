@@ -28,8 +28,10 @@ use super::{router::RouterTx, NetworkError};
 
 pub struct WanHandle {
     name: String,
+    ty: String,
     thread: JoinHandle<()>,
     tx: Box<dyn WanTx>,
+    stats: WanStats,
 }
 
 /// Represents statistics for a WAN device
@@ -42,9 +44,6 @@ pub struct WanStats(Arc<WanStatsInner>);
 
 #[derive(Debug)]
 struct WanStatsInner {
-    /// Type of WAN device
-    ty: String,
-
     /// Total bytes transmitted (sent/write) over WAN device
     tx: AtomicU64,
 
@@ -52,14 +51,61 @@ struct WanStatsInner {
     rx: AtomicU64,
 }
 
+pub trait Wan: Send + Sync
+where
+    Self: 'static,
+{
+    /// Human-friendly name of the WAN device
+    fn name(&self) -> &str;
+
+    /// Returns the type of this WAN connection
+    fn ty(&self) -> &str;
+
+    /// Returns the number of bytes transmitted (tx) and received (tx)
+    /// over this WAN connection.
+    ///
+    /// Return value: (tx, rx)
+    fn stats(&self) -> WanStats;
+
+    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError>;
+
+    fn run(self: Box<Self>, router: RouterTx) -> Result<(), NetworkError>;
+
+    fn spawn(self: Box<Self>, router: RouterTx) -> Result<WanHandle, NetworkError> {
+        let tx = self.tx()?;
+        let ty = self.ty().to_owned();
+        let name = self.name().to_owned();
+        let stats = self.stats();
+
+        let thread = std::thread::Builder::new()
+            .name(format!("wan-{}", self.name()))
+            .spawn(move || match self.run(router) {
+                Ok(_) => tracing::trace!("wan thread exited successfully"),
+                Err(error) => tracing::warn!(?error, "unable to run wan thread"),
+            })?;
+
+        Ok(WanHandle {
+            name,
+            ty,
+            thread,
+            tx,
+            stats,
+        })
+    }
+}
+
+pub trait WanTx: Send + Sync {
+    /// Writes a packet to the upstream device
+    fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError>;
+}
+
 impl WanStats {
     /// Creates a new WanStats, with counters initialized to zero
     ///
     /// ### Arguments
     /// * `ty` - WAN device description / type
-    pub fn new<S: Into<String>>(ty: S) -> Self {
+    pub fn new() -> Self {
         let inner = WanStatsInner {
-            ty: ty.into(),
             tx: AtomicU64::new(0),
             rx: AtomicU64::new(0),
         };
@@ -92,53 +138,20 @@ impl WanStats {
     pub fn rx(&self) -> u64 {
         self.0.rx.load(Ordering::Relaxed)
     }
-
-    /// Returns the type of this WAN device
-    pub fn wan_type(&self) -> &str {
-        self.0.ty.as_str()
-    }
-}
-
-pub trait Wan: Send + Sync
-where
-    Self: 'static,
-{
-    /// Human-friendly name of the WAN device
-    fn name(&self) -> &str;
-
-    /// Returns the number of bytes transmitted (tx) and received (tx)
-    /// over this WAN connection.
-    ///
-    /// Return value: (tx, rx)
-    fn stats(&self) -> WanStats;
-
-    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError>;
-
-    fn run(self: Box<Self>, router: RouterTx) -> Result<(), NetworkError>;
-
-    fn spawn(self: Box<Self>, router: RouterTx) -> Result<WanHandle, NetworkError> {
-        let tx = self.tx()?;
-        let name = self.name().to_owned();
-
-        let thread = std::thread::Builder::new()
-            .name(format!("wan-{}", self.name()))
-            .spawn(move || match self.run(router) {
-                Ok(_) => tracing::trace!("wan thread exited successfully"),
-                Err(error) => tracing::warn!(?error, "unable to run wan thread"),
-            })?;
-
-        Ok(WanHandle { name, thread, tx })
-    }
-}
-
-pub trait WanTx: Send + Sync {
-    /// Writes a packet to the upstream device
-    fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError>;
 }
 
 impl WanHandle {
     pub fn name(&self) -> &str {
         self.name.as_str()
+    }
+
+    pub fn ty(&self) -> &str {
+        self.ty.as_str()
+    }
+
+    /// Returns true if this WAN is running, false if it has stopped
+    pub fn is_running(&self) -> bool {
+        !self.thread.is_finished()
     }
 
     pub fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
@@ -147,6 +160,18 @@ impl WanHandle {
         }
 
         Ok(())
+    }
+
+    pub fn stats_tx(&self) -> u64 {
+        self.stats.tx()
+    }
+
+    pub fn stats_rx(&self) -> u64 {
+        self.stats.rx()
+    }
+
+    pub fn stats(&self) -> WanStats {
+        self.stats.clone()
     }
 
     pub fn stop(&self) -> Result<(), NetworkError> {
