@@ -423,7 +423,7 @@ impl Router {
     /// ### Arguments
     /// * `pkt` - A layer 3 (IPv4) packet to write to the ether
     fn forward_packet(&mut self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
-        let wan_idx = self.table.get_route_wan_idx(pkt.dest());
+        let wan_idx = self.table.get_route_wan_idx(pkt.dest())?;
 
         tracing::debug!("routing packet with dest {} over wan {wan_idx}", pkt.dest());
 

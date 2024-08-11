@@ -69,20 +69,23 @@ impl RouteTable {
     ///
     /// ### Arguments
     /// * `ip` - IPv4 address to route
-    pub fn get_route_wan_idx(&self, ip: Ipv4Addr) -> usize {
-        match self.table.read().longest_match(ip) {
-            None => 0,
-            Some((ip, mask, idx)) => {
-                self.stats
-                    .write()
-                    .entry(Ipv4Network::new(ip, mask as u8))
-                    .and_modify(|count| {
-                        *count += 1;
-                    })
-                    .or_insert(1);
-                *idx
-            }
-        }
+    pub fn get_route_wan_idx(&self, ip: Ipv4Addr) -> Result<usize, NetworkError> {
+        let (ip, mask, idx) = self
+            .table
+            .read()
+            .longest_match(ip)
+            .map(|(ip, mask, idx)| (ip, mask, *idx))
+            .ok_or_else(|| NetworkError::RouteNotFound(Ipv4Network::new(ip, 32)))?;
+
+        self.stats
+            .write()
+            .entry(Ipv4Network::new(ip, mask as u8))
+            .and_modify(|count| {
+                *count += 1;
+            })
+            .or_insert(1);
+
+        Ok(idx)
     }
 
     /// Inserts a new route to a given subnet via the specificed WAN index
