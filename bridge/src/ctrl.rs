@@ -7,13 +7,10 @@ use std::{
 };
 
 use mio::{event::Source, net::UnixListener, Token};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use shadesmar_net::types::Ipv4Network;
 
-use crate::{
-    error::Error,
-    net::{router::RouterStatus, switch::SwitchStatus},
-};
+use crate::error::Error;
 
 const TOKEN_CTRL_STREAM: usize = 0x0000_0001_0000_0000;
 const CTRL_MSG_HDR_SZ: usize = 5;
@@ -56,12 +53,12 @@ pub enum CtrlRequest {
 
 /// Represents a response from the server to a client
 #[derive(Debug, Deserialize, Serialize)]
-pub enum CtrlResponse {
-    /// Empty response to signal network is still alive
-    Pong,
+pub enum CtrlResponse<T> {
+    /// Response if the operation was successful
+    Success(T),
 
-    /// Returns the status of the switch
-    Status(SwitchStatus, RouterStatus),
+    /// Response if the operation failed
+    Failed(String),
 }
 
 impl CtrlSocket {
@@ -113,7 +110,7 @@ impl CtrlClientStream {
         }
     }
 
-    pub fn recv(&mut self) -> Result<Option<CtrlResponse>, Error> {
+    pub fn recv<T: DeserializeOwned>(&mut self) -> Result<Option<CtrlResponse<T>>, Error> {
         // [0x01 | len | buf]
         let mut hdr = [0u8; 5];
 
@@ -123,7 +120,7 @@ impl CtrlClientStream {
         let mut data = vec![0u8; sz as usize];
         self.read(&mut data)?;
 
-        let msg: CtrlResponse = bincode::deserialize(&data)?;
+        let msg: CtrlResponse<T> = bincode::deserialize(&data)?;
 
         Ok(Some(msg))
     }
@@ -246,7 +243,7 @@ impl CtrlServerStream {
     ///
     /// ### Arguments
     /// * `msg` -  Response to send to client
-    pub fn send(&mut self, msg: CtrlResponse) -> Result<(), Error> {
+    pub fn send<T: Serialize>(&mut self, msg: CtrlResponse<T>) -> Result<(), Error> {
         // encode using bincode
         let data = bincode::serialize(&msg)?;
 
@@ -262,6 +259,21 @@ impl CtrlServerStream {
         tracing::trace!("wrote {sz} bytes to client");
 
         Ok(())
+    }
+}
+
+impl CtrlResponse<()> {
+    /// Creates a failed response method with the identity (()) type as the sucess type
+    ///
+    /// ### Arguments
+    /// * `msg` - Error message to include
+    pub fn fail<S: Into<String>>(msg: S) -> Self {
+        Self::Failed(msg.into())
+    }
+
+    /// Returns an empty success message
+    pub fn ok() -> Self {
+        Self::Success(())
     }
 }
 

@@ -573,8 +573,7 @@ impl RouterHandle {
         {
             None => {
                 tracing::warn!("wan {wan_name} not found, not adding route");
-                // TODO: return error?
-                return Ok(());
+                return Err(NetworkError::WanDeviceNotFound(wan_name));
             }
             Some(idx) => self.route_table.add_route(dst, idx),
         }
@@ -587,8 +586,7 @@ impl RouterHandle {
     /// ### Arguments
     /// * `route` - Route to delete
     pub fn del_route(&self, route: Ipv4Network) -> Result<(), NetworkError> {
-        self.route_table.remove_route(route);
-        Ok(())
+        self.route_table.remove_route(route)
     }
 
     /// Adds a new WAN connection
@@ -601,13 +599,10 @@ impl RouterHandle {
         let name = name.as_ref();
         tracing::info!("stopping wan device {name}");
 
-        if let Some(wan) = self.wans.read().iter().position(|wan| wan.name() == name) {
-            if let Some(wan) = self.wans.read().get(wan) {
-                wan.stop()?;
-            }
+        match self.wans.read().iter().find(|wan| wan.name() == name) {
+            None => Err(NetworkError::WanDeviceNotFound(name.to_owned())),
+            Some(wan) => wan.stop(),
         }
-
-        Ok(())
     }
 }
 

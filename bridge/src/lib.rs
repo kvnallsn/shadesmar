@@ -1,7 +1,7 @@
 mod config;
 pub mod ctrl;
 mod error;
-mod net;
+pub mod net;
 
 use std::{collections::HashMap, fmt::Display, os::fd::AsRawFd, path::PathBuf};
 
@@ -350,22 +350,41 @@ impl Bridge {
                     let switch_status = switch.get_status()?;
                     let router_status = router.status();
 
-                    strm.send(CtrlResponse::Status(switch_status, router_status))?;
+                    strm.send(CtrlResponse::Success((switch_status, router_status)))?;
+                    //strm.send(CtrlResponse::Status(switch_status, router_status))?;
                 }
                 CtrlRequest::Ping => {
-                    strm.send(CtrlResponse::Pong)?;
+                    strm.send(CtrlResponse::Success(()))?;
                 }
                 CtrlRequest::AddRoute(route, wan) => {
-                    router.add_route(route, wan)?;
-                    strm.send(CtrlResponse::Pong)?;
+                    let resp = match router.add_route(route, wan) {
+                        Ok(_) => CtrlResponse::ok(),
+                        Err(error) => CtrlResponse::fail(error.to_string()),
+                    };
+
+                    if let Err(error) = strm.send(resp) {
+                        tracing::warn!(%error, "unable to send control response to client");
+                    }
                 }
                 CtrlRequest::DelRoute(route) => {
-                    router.del_route(route)?;
-                    strm.send(CtrlResponse::Pong)?;
+                    let resp = match router.del_route(route) {
+                        Ok(_) => CtrlResponse::ok(),
+                        Err(error) => CtrlResponse::fail(error.to_string()),
+                    };
+
+                    if let Err(error) = strm.send(resp) {
+                        tracing::warn!(%error, "unable to send control response to client");
+                    }
                 }
                 CtrlRequest::RemoveWan(name) => {
-                    router.del_wan(name)?;
-                    strm.send(CtrlResponse::Pong)?;
+                    let resp = match router.del_wan(name) {
+                        Ok(_) => CtrlResponse::ok(),
+                        Err(error) => CtrlResponse::fail(error.to_string()),
+                    };
+
+                    if let Err(error) = strm.send(resp) {
+                        tracing::warn!(%error, "unable to send control response to client");
+                    }
                 }
             }
         }

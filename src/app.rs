@@ -13,8 +13,10 @@ use anyhow::Context;
 use console::Style;
 use dialoguer::{theme::Theme, Confirm};
 use pcap::handle_pcap;
+use serde::de::DeserializeOwned;
 use shadesmar_bridge::{
     ctrl::{CtrlClientStream, CtrlRequest, CtrlResponse},
+    net::{router::RouterStatus, switch::SwitchStatus},
     Bridge,
 };
 use shadesmar_net::types::Ipv4Network;
@@ -330,85 +332,82 @@ impl App {
         let green = Style::new().green();
         let red = Style::new().red();
 
-        match sock.recv()? {
-            Some(CtrlResponse::Status(switch, router)) => {
-                println!("Router Status:");
-                //table!();
-                println!("MAC:      {}", router.mac);
-                println!("Network:  {}", router.network);
+        let (switch, router) =
+            self.handle_ctrl_result::<(SwitchStatus, RouterStatus)>(&mut sock)?;
 
-                println!("");
-                println!("WAN Interfaces:");
-                table!(top);
-                table!(header; bold; ("Name", 18), ("Status", 8), ("Type", 12), ("TX", 13), ("RX", 13));
-                table!(sep);
-                for (name, (running, ty, tx, rx)) in router
-                    .wan_stats
-                    .iter()
-                    .collect::<BinaryHeap<_>>()
-                    .iter()
-                    .rev()
-                {
-                    let tx = human_bytes!(*tx);
-                    let rx = human_bytes!(*rx);
-                    let status = match running {
-                        true => green.apply_to("running"),
-                        false => red.apply_to("dead"),
-                    };
+        println!("Router Status:");
+        //table!();
+        println!("MAC:      {}", router.mac);
+        println!("Network:  {}", router.network);
 
-                    table!(row; (name,18,"<"), (status,8,"<"), (ty,12,"<"), (tx,13,">"), (rx,13,">"));
-                }
-                table!(bottom);
+        println!("");
+        println!("WAN Interfaces:");
+        table!(top);
+        table!(header; bold; ("Name", 18), ("Status", 8), ("Type", 12), ("TX", 13), ("RX", 13));
+        table!(sep);
+        for (name, (running, ty, tx, rx)) in router
+            .wan_stats
+            .iter()
+            .collect::<BinaryHeap<_>>()
+            .iter()
+            .rev()
+        {
+            let tx = human_bytes!(*tx);
+            let rx = human_bytes!(*rx);
+            let status = match running {
+                true => green.apply_to("running"),
+                false => red.apply_to("dead"),
+            };
 
-                println!("");
-                println!("Route Table:");
-                table!(top);
-                table!(header; bold; ("Destination", 20), ("Via", 20), ("Packet Count", 30));
-                table!(sep);
-                for (net, (wan, num_packets)) in router
-                    .route_table
-                    .into_iter()
-                    .collect::<BinaryHeap<_>>()
-                    .into_iter()
-                    .rev()
-                {
-                    let net = net.to_string();
-                    let wan = match router.wan_stats.get(&wan) {
-                        None => red.apply_to("wan missing".to_owned()),
-                        Some((true, _, _, _)) => green.apply_to(wan),
-                        Some((false, _, _, _)) => red.apply_to(format!("{wan} (dead)")),
-                    };
-
-                    table!(row; (net,20,"<"), (wan, 20, "<"), (num_packets, 30, "<"));
-                }
-                table!(bottom);
-
-                println!("");
-                println!("Switch Status:");
-                //table!();
-                //println!("LAN:      {}", human_bytes!(switch.pkt_stats));
-                table!(top);
-                table!(header; bold; ("Port", 8), ("Type", 10), ("MACs", 52));
-                table!(sep);
-                for (idx, port) in switch.ports.iter().enumerate() {
-                    let macs = port
-                        .macs
-                        .iter()
-                        .map(|mac| mac.to_string())
-                        .collect::<Vec<_>>();
-
-                    let macs = match macs.is_empty() {
-                        false => macs.join(","),
-                        true => String::from("-"),
-                    };
-
-                    table!(row; (idx,8,">"), (port.desc,10, "<"), (macs,52,"<"));
-                }
-                table!(bottom);
-            }
-            Some(_) => tracing::warn!("requested, status, received non-status response"),
-            None => tracing::warn!("requested status, did not receive a response"),
+            table!(row; (name,18,"<"), (status,8,"<"), (ty,12,"<"), (tx,13,">"), (rx,13,">"));
         }
+        table!(bottom);
+
+        println!("");
+        println!("Route Table:");
+        table!(top);
+        table!(header; bold; ("Destination", 20), ("Via", 20), ("Packet Count", 30));
+        table!(sep);
+        for (net, (wan, num_packets)) in router
+            .route_table
+            .into_iter()
+            .collect::<BinaryHeap<_>>()
+            .into_iter()
+            .rev()
+        {
+            let net = net.to_string();
+            let wan = match router.wan_stats.get(&wan) {
+                None => red.apply_to("wan missing".to_owned()),
+                Some((true, _, _, _)) => green.apply_to(wan),
+                Some((false, _, _, _)) => red.apply_to(format!("{wan} (dead)")),
+            };
+
+            table!(row; (net,20,"<"), (wan, 20, "<"), (num_packets, 30, "<"));
+        }
+        table!(bottom);
+
+        println!("");
+        println!("Switch Status:");
+        //table!();
+        //println!("LAN:      {}", human_bytes!(switch.pkt_stats));
+        table!(top);
+        table!(header; bold; ("Port", 8), ("Type", 10), ("MACs", 52));
+        table!(sep);
+        for (idx, port) in switch.ports.iter().enumerate() {
+            let macs = port
+                .macs
+                .iter()
+                .map(|mac| mac.to_string())
+                .collect::<Vec<_>>();
+
+            let macs = match macs.is_empty() {
+                false => macs.join(","),
+                true => String::from("-"),
+            };
+
+            table!(row; (idx,8,">"), (port.desc,10, "<"), (macs,52,"<"));
+        }
+        table!(bottom);
 
         Ok(())
     }
@@ -451,6 +450,18 @@ impl App {
         Ok(())
     }
 
+    fn handle_ctrl_result<D>(&self, sock: &mut CtrlClientStream) -> anyhow::Result<D>
+    where
+        D: DeserializeOwned,
+    {
+        match sock.recv()? {
+            Some(CtrlResponse::Success(obj)) => Ok(obj),
+            Some(CtrlResponse::Failed(msg)) => Err(anyhow::anyhow!("{msg}")),
+            None => Err(anyhow::anyhow!("empty control response message")),
+            _ => panic!(""),
+        }
+    }
+
     /// Adds a new route to the routing table
     ///
     /// ### Arguments
@@ -462,7 +473,7 @@ impl App {
 
         let mut sock = network.ctrl_socket()?;
         sock.send(CtrlRequest::AddRoute(route, wan))?;
-        sock.recv()?;
+        self.handle_ctrl_result::<()>(&mut sock)?;
 
         Ok(())
     }
@@ -477,7 +488,7 @@ impl App {
 
         let mut sock = network.ctrl_socket()?;
         sock.send(CtrlRequest::DelRoute(route))?;
-        sock.recv()?;
+        self.handle_ctrl_result::<()>(&mut sock)?;
 
         Ok(())
     }
@@ -494,7 +505,7 @@ impl App {
 
         let mut sock = network.ctrl_socket()?;
         sock.send(CtrlRequest::RemoveWan(wan))?;
-        sock.recv()?;
+        self.handle_ctrl_result::<()>(&mut sock)?;
 
         Ok(())
     }

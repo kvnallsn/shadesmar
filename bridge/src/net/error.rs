@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use shadesmar_net::ProtocolError;
+use shadesmar_net::{types::Ipv4Network, ProtocolError};
 
 /// Collection of errors that may occur during routing/switching packets
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +24,12 @@ pub enum NetworkError {
 
     #[error("unable to decode base64: {0}")]
     DecodeSlice(#[from] base64::DecodeSliceError),
+
+    #[error("route not found: {0}")]
+    RouteNotFound(Ipv4Network),
+
+    #[error("wan device not found")]
+    WanDeviceNotFound(String),
 
     #[error("sender channel closed")]
     ChannelClosed,

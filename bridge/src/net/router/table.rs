@@ -6,6 +6,8 @@ use ip_network_table_deps_treebitmap::IpLookupTable;
 use parking_lot::RwLock;
 use shadesmar_net::types::Ipv4Network;
 
+use crate::net::NetworkError;
+
 use super::Wan;
 
 /// A `RouteTable` that can be freely shared between threads
@@ -97,11 +99,14 @@ impl RouteTable {
     ///
     /// ### Arguments
     /// * `ip` - Subnet/IPv4 address for which to remove a specific route
-    pub fn remove_route(&self, ip: Ipv4Network) {
+    pub fn remove_route(&self, ip: Ipv4Network) -> Result<(), NetworkError> {
         tracing::trace!("removing route: {ip}");
         self.table
             .write()
-            .remove(ip.ip(), u32::from(ip.subnet_mask_bits()));
+            .remove(ip.ip(), u32::from(ip.subnet_mask_bits()))
+            .ok_or_else(|| NetworkError::RouteNotFound(ip))?;
+
+        Ok(())
     }
 
     /// Returns a mapping of subnets/prefixes to interface ids
