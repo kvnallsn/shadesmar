@@ -25,6 +25,9 @@ pub enum Error {
     #[error("bincode: {0}")]
     Bincode(#[from] bincode::Error),
 
+    #[error("json: {0}")]
+    Json(#[from] serde_json::Error),
+
     #[error("{0}")]
     Other(Cow<'static, str>),
 }

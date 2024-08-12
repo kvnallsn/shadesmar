@@ -14,8 +14,7 @@ use dialoguer::{theme::Theme, Confirm};
 use pcap::handle_pcap;
 use shadesmar_bridge::{
     ctrl::{CtrlClientStream, CtrlRequest},
-    net::{router::RouterStatus, switch::SwitchStatus},
-    Bridge,
+    Bridge, BridgeStatus,
 };
 use shadesmar_net::types::Ipv4Network;
 
@@ -328,19 +327,19 @@ impl App {
         let red = Style::new().red();
 
         let mut sock = network.ctrl_socket()?;
-        let (switch, router) = sock.request::<(SwitchStatus, RouterStatus)>(CtrlRequest::Status)?;
+        let bridge: BridgeStatus = sock.request(CtrlRequest::Status)?;
 
         println!("Router Status:");
         //table!();
-        println!("MAC:      {}", router.mac);
-        println!("Network:  {}", router.network);
+        println!("MAC:      {}", bridge.router.mac);
+        println!("Network:  {}", bridge.router.network);
 
         println!("");
         println!("WAN Interfaces:");
         table!(top);
         table!(header; bold; ("Name", 18), ("Status", 8), ("Type", 12), ("TX", 13), ("RX", 13));
         table!(sep);
-        for (name, (running, ty, tx, rx)) in router.wan_stats.iter() {
+        for (name, (running, ty, tx, rx)) in bridge.router.wan_stats.iter() {
             let tx = human_bytes!(*tx);
             let rx = human_bytes!(*rx);
             let status = match running {
@@ -357,13 +356,13 @@ impl App {
         table!(top);
         table!(header; bold; ("Destination", 20), ("Via", 20), ("Packet Count", 30));
         table!(sep);
-        for (net, (wan, num_packets)) in router.route_table.into_iter() {
+        for (net, (wan, num_packets)) in bridge.router.route_table.into_iter() {
             let net = match net.is_default() {
                 true => String::from("default"),
                 false => net.to_string(),
             };
 
-            let wan = match router.wan_stats.get(&wan) {
+            let wan = match bridge.router.wan_stats.get(&wan) {
                 None => red.apply_to("wan missing".to_owned()),
                 Some((true, _, _, _)) => green.apply_to(wan),
                 Some((false, _, _, _)) => red.apply_to(format!("{wan} (dead)")),
@@ -380,7 +379,7 @@ impl App {
         table!(top);
         table!(header; bold; ("Port", 8), ("Type", 10), ("MACs", 52));
         table!(sep);
-        for (idx, port) in switch.ports.iter().enumerate() {
+        for (idx, port) in bridge.switch.ports.iter().enumerate() {
             let macs = port
                 .macs
                 .iter()

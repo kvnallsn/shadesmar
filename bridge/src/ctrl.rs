@@ -53,6 +53,7 @@ pub enum CtrlRequest {
 
 /// Represents a response from the server to a client
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(tag = "type")]
 pub enum CtrlResponse<T> {
     /// Response if the operation was successful
     Success(T),
@@ -120,15 +121,14 @@ impl CtrlClientStream {
         let mut data = vec![0u8; sz as usize];
         self.read(&mut data)?;
 
-        match bincode::deserialize(&data)? {
+        match CtrlResponse::decode(&data)? {
             CtrlResponse::Success(obj) => Ok(obj),
             CtrlResponse::Failed(msg) => Err(Error::Other(msg.into())),
         }
     }
 
     pub fn send(&mut self, msg: CtrlRequest) -> Result<(), Error> {
-        // encode using bincode
-        let data = bincode::serialize(&msg)?;
+        let data = msg.encode()?;
 
         let mut hdr = [0u8; 5];
         let sz_bytes = data.len().to_le_bytes();
@@ -238,7 +238,7 @@ impl CtrlServerStream {
                 break;
             }
 
-            let msg: CtrlRequest = bincode::deserialize(&data[CTRL_MSG_HDR_SZ..total_sz])?;
+            let msg = CtrlRequest::decode(&data[CTRL_MSG_HDR_SZ..total_sz])?;
 
             // drop the used elements
             data.drain(..total_sz);
@@ -256,8 +256,7 @@ impl CtrlServerStream {
     /// ### Arguments
     /// * `msg` -  Response to send to client
     pub fn send<T: Serialize>(&mut self, msg: CtrlResponse<T>) -> Result<(), Error> {
-        // encode using bincode
-        let data = bincode::serialize(&msg)?;
+        let data = msg.encode()?;
 
         let mut hdr = [0u8; CTRL_MSG_HDR_SZ];
         let sz_bytes = data.len().to_le_bytes();
@@ -274,6 +273,23 @@ impl CtrlServerStream {
     }
 }
 
+impl CtrlRequest {
+    /// Decodes a byte slice into a response
+    ///
+    /// ### Arguments
+    /// * `data` - bytes to decode
+    pub fn decode(data: &[u8]) -> Result<Self, Error> {
+        let resp: CtrlRequest = serde_json::from_slice(data)?;
+        Ok(resp)
+    }
+
+    /// Encodes a response into a serialized format to be sent over a socket
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let data = serde_json::to_vec(&self)?;
+        Ok(data)
+    }
+}
+
 impl CtrlResponse<()> {
     /// Creates a failed response method with the identity (()) type as the sucess type
     ///
@@ -286,6 +302,31 @@ impl CtrlResponse<()> {
     /// Returns an empty success message
     pub fn ok() -> Self {
         Self::Success(())
+    }
+}
+
+impl<T> CtrlResponse<T>
+where
+    T: DeserializeOwned,
+{
+    /// Decodes a byte slice into a response
+    ///
+    /// ### Arguments
+    /// * `data` - bytes to decode
+    pub fn decode(data: &[u8]) -> Result<Self, Error> {
+        let resp: CtrlResponse<T> = serde_json::from_slice(data)?;
+        Ok(resp)
+    }
+}
+
+impl<T> CtrlResponse<T>
+where
+    T: Serialize,
+{
+    /// Encodes a response into a serialized format to be sent over a socket
+    pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        let data = serde_json::to_vec(&self)?;
+        Ok(data)
     }
 }
 

@@ -7,7 +7,10 @@ use std::{collections::HashMap, fmt::Display, os::fd::AsRawFd, path::PathBuf};
 
 use ctrl::CtrlResponse;
 use mio::{unix::SourceFd, Events, Interest, Poll, Token};
-use net::router::RouterHandle;
+use net::{
+    router::{RouterHandle, RouterStatus},
+    switch::SwitchStatus,
+};
 use nix::{
     errno::Errno,
     sys::{
@@ -16,6 +19,7 @@ use nix::{
     },
     unistd::Pid,
 };
+use serde::{Deserialize, Serialize};
 use shadesmar_vhost::{DeviceOpts, VHostSocket};
 
 pub use self::config::Config as BridgeConfig;
@@ -60,6 +64,15 @@ pub struct Bridge {
     pcap: Option<PathBuf>,
     cfg: BridgeConfig,
     data_dir: PathBuf,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct BridgeStatus {
+    /// Status of the internal switch
+    pub switch: SwitchStatus,
+
+    /// Status of the router/wan
+    pub router: RouterStatus,
 }
 
 impl BridgeBuilder {
@@ -353,7 +366,12 @@ impl Bridge {
                     let switch_status = switch.get_status()?;
                     let router_status = router.status();
 
-                    strm.send(CtrlResponse::Success((switch_status, router_status)))?;
+                    let status = BridgeStatus {
+                        switch: switch_status,
+                        router: router_status,
+                    };
+
+                    strm.send(CtrlResponse::Success(&status))?;
                 }
                 CtrlRequest::Ping => {
                     strm.send(CtrlResponse::Success(()))?;
