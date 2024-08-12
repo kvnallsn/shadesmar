@@ -26,11 +26,21 @@ pub use self::{
 
 use super::{router::RouterTx, NetworkError};
 
+/// A `WanHandle` provides a method to communicate with a WAN device
 pub struct WanHandle {
+    /// Name of the WAN device
     name: String,
+
+    /// Type of WAN device (i.e., WireGuard)
     ty: String,
+
+    /// Thread running the WAN device
     thread: JoinHandle<()>,
+
+    /// Transmit/sender channel to queue packets for transmission
     tx: Box<dyn WanTx>,
+
+    /// Send/Receive stats
     stats: WanStats,
 }
 
@@ -51,6 +61,7 @@ struct WanStatsInner {
     rx: AtomicU64,
 }
 
+/// Core trait to describe a WAN device
 pub trait Wan: Send + Sync
 where
     Self: 'static,
@@ -67,10 +78,27 @@ where
     /// Return value: (tx, rx)
     fn stats(&self) -> WanStats;
 
+    /// Returns a transmitter/sender channel to queue packets for transmission
+    ///
+    /// If the channel is closed, or cannot otherwise be used, returns an error
     fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError>;
 
+    /// Main receiver loop for a WAN device
+    ///
+    /// This function should receive traffic from the distant end and queue it for
+    /// routing by sending it over router's TX channel
+    ///
+    /// ### Arguments
+    /// * `router` - Trasmit/send channel to queue packets for routing
     fn run(self: Box<Self>, router: RouterTx) -> Result<(), NetworkError>;
 
+    /// Convenience function to spawn a thread to run the WAN device
+    ///
+    /// Sets up the `WanHandle` that can be used to communicate with the WAN
+    /// (i.e., queue packets for transmission and track stats)
+    ///
+    /// ### Arguments
+    /// * `router` - Trasmit/send channel to queue packets for routing
     fn spawn(self: Box<Self>, router: RouterTx) -> Result<WanHandle, NetworkError> {
         let tx = self.tx()?;
         let ty = self.ty().to_owned();
@@ -141,10 +169,12 @@ impl WanStats {
 }
 
 impl WanHandle {
+    /// Returns the name of the WAN device
     pub fn name(&self) -> &str {
         self.name.as_str()
     }
 
+    /// Returns the type of WAN attached to this WAN handle
     pub fn ty(&self) -> &str {
         self.ty.as_str()
     }
@@ -154,6 +184,10 @@ impl WanHandle {
         !self.thread.is_finished()
     }
 
+    /// If the WAN is running, attempts to queue the packet for transmission
+    ///
+    /// ### Arguments
+    /// * `pkt`- IPv4 packet to queue for transmission
     pub fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
         if !self.thread.is_finished() {
             self.tx.write(pkt)?;
@@ -162,18 +196,17 @@ impl WanHandle {
         Ok(())
     }
 
+    /// Returns the number of bytes transmitted/sent over this WAN
     pub fn stats_tx(&self) -> u64 {
         self.stats.tx()
     }
 
+    /// Returns the number of bytes received/read from this WAN
     pub fn stats_rx(&self) -> u64 {
         self.stats.rx()
     }
 
-    pub fn stats(&self) -> WanStats {
-        self.stats.clone()
-    }
-
+    /// Attempts to stop this WAN device
     pub fn stop(&self) -> Result<(), NetworkError> {
         tracing::debug!("attempting to stop wan thread");
         let tid = self.thread.as_pthread_t();
