@@ -158,7 +158,11 @@ impl App {
                 wan,
             } => self.add_route(network, route, wan)?,
             Command::RouteDelete { network, route } => self.del_route(network, route)?,
-            Command::WanStop { network, wan } => self.stop_wan(network, wan)?,
+            Command::WanStop {
+                network,
+                wan,
+                cleanup,
+            } => self.stop_wan(network, wan, cleanup)?,
         };
         Ok(())
     }
@@ -480,11 +484,12 @@ impl App {
     /// ### Arguments
     /// * `network` - Network for which the WAN device is assigned
     /// * `wan` - Name of WAN device to stop
-    fn stop_wan(self, network: String, wan: String) -> anyhow::Result<()> {
+    /// * `cleanup` - Remove associated routes
+    fn stop_wan(self, network: String, wan: String, cleanup: bool) -> anyhow::Result<()> {
         let network = self.open_network(network)?;
 
         let mut sock = network.ctrl_socket()?;
-        sock.request::<()>(CtrlRequest::RemoveWan(wan))?;
+        sock.request::<()>(CtrlRequest::RemoveWan(wan, cleanup))?;
 
         Ok(())
     }

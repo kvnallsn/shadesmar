@@ -392,8 +392,8 @@ impl Bridge {
 
                     strm.send(resp)?;
                 }
-                CtrlRequest::RemoveWan(name) => {
-                    let resp = match router.del_wan(name) {
+                CtrlRequest::RemoveWan(name, cleanup) => {
+                    let resp = match router.del_wan(name, cleanup) {
                         Ok(_) => CtrlResponse::ok(),
                         Err(error) => CtrlResponse::fail(error.to_string()),
                     };

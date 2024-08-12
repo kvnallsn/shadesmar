@@ -607,14 +607,27 @@ impl RouterHandle {
     }
 
     /// Deletes a WAN connection
-    pub fn del_wan<S: AsRef<str>>(&self, name: S) -> Result<(), NetworkError> {
+    ///
+    /// ### Arguments
+    /// * `name` - Name of WAN connection to delete
+    /// * `cleanup` - True to remove associated routes, false to leave them
+    pub fn del_wan<S: AsRef<str>>(&self, name: S, cleanup: bool) -> Result<(), NetworkError> {
         let name = name.as_ref();
         tracing::info!("stopping wan device {name}");
+        let wans = self.wans.read();
 
-        match self.wans.read().iter().find(|wan| wan.name() == name) {
-            None => Err(NetworkError::WanDeviceNotFound(name.to_owned())),
-            Some(wan) => wan.stop(),
+        let wan_idx = wans
+            .iter()
+            .position(|wan| wan.name() == name)
+            .ok_or_else(|| NetworkError::WanDeviceNotFound(name.to_owned()))?;
+
+        wans[wan_idx].stop()?;
+
+        if cleanup {
+            self.route_table.remove_routes_by_wan(wan_idx)?;
         }
+
+        Ok(())
     }
 }
 

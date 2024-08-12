@@ -116,6 +116,28 @@ impl RouteTable {
         Ok(())
     }
 
+    /// Removes all routes associated with a WAN's index
+    ///
+    /// ### Arguments
+    /// * `idx` - Index value of WAN to remove
+    pub fn remove_routes_by_wan(&self, wan_idx: usize) -> Result<(), NetworkError> {
+        let mut table = self.table.write();
+
+        let routes = table
+            .iter()
+            .filter_map(|(ip, mask, idx)| match *idx == wan_idx {
+                true => Some((ip, mask)),
+                false => None,
+            })
+            .collect::<Vec<_>>();
+
+        for (ip, masklen) in routes {
+            tracing::trace!("remove route {ip}/{masklen}");
+            table.remove(ip, masklen);
+        }
+        Ok(())
+    }
+
     /// Returns a mapping of subnets/prefixes to interface ids
     pub fn routes(&self) -> BTreeMap<Ipv4Network, (String, u64)> {
         self.table

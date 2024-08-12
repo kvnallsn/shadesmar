@@ -14,7 +14,7 @@ use shadesmar_net::types::Ipv4Network;
 #[command(version, author, about)]
 struct Opts {
     /// Controls the verboisty/logging level (-v, -vv, -vvv)
-    #[clap(short, long, action = clap::ArgAction::Count)]
+    #[clap(short, long, global=true, action = clap::ArgAction::Count)]
     verbose: u8,
 
     /// Command to execute
@@ -87,6 +87,10 @@ pub enum Command {
 
         /// Name of wan device to stop
         wan: String,
+
+        /// Removes all routes associated with this WAN device
+        #[clap(short = 'a', long = "cleanup")]
+        cleanup: bool,
     },
 
     /// Stops a (daemonized) shadesmar network

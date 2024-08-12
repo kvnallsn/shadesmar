@@ -48,7 +48,7 @@ pub enum CtrlRequest {
     DelRoute(Ipv4Network),
 
     /// Removes a wan connection (by name)
-    RemoveWan(String),
+    RemoveWan(String, bool),
 }
 
 /// Represents a response from the server to a client
@@ -257,7 +257,6 @@ impl CtrlServerStream {
     /// * `msg` -  Response to send to client
     pub fn send<T: Serialize>(&mut self, msg: CtrlResponse<T>) -> Result<(), Error> {
         let data = msg.encode()?;
-
         let mut hdr = [0u8; CTRL_MSG_HDR_SZ];
         let sz_bytes = data.len().to_le_bytes();
         hdr[0] = 0x01; // version?
