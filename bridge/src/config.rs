@@ -30,7 +30,9 @@ pub struct WanConfig {
     pub name: String,
 
     /// The IPv4 address to assign to this WAN device
-    pub ipv4: Ipv4Network,
+    ///
+    /// If set, the router will attempt to masquerade packets using this address
+    pub ipv4: Option<Ipv4Network>,
 
     /// WAN-device specific configuration
     pub device: WanDevice,

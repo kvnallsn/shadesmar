@@ -5,6 +5,7 @@ use std::{
     fmt::Debug,
     fs::File,
     io::{self, IoSlice, Read, Write},
+    net::Ipv4Addr,
     os::fd::AsRawFd,
     sync::Arc,
 };
@@ -31,6 +32,9 @@ const TOKEN_WRITE: Token = Token(1);
 pub struct TunTap {
     /// Name of the tun device
     name: String,
+
+    /// IPv4 address assigned to this TUN/TAP device
+    ipv4: Ipv4Addr,
 
     /// Opened file descriptor to the device
     fd: File,
@@ -72,19 +76,19 @@ impl TunTap {
     /// Creates a new tap device
     ///
     /// Note: This requires administration privileges or CAP_NET_ADMIN
-    pub fn create_tap<S: Into<String>>(name: S) -> Result<Self, NetworkError> {
-        Self::create(name.into(), IFF_TAP)
+    pub fn create_tap<S: Into<String>>(name: S, ipv4: Ipv4Addr) -> Result<Self, NetworkError> {
+        Self::create(name.into(), IFF_TAP, ipv4)
     }
 
     /// Creates a new tun device
     ///
     /// Note: This requires administration privileges or CAP_NET_ADMIN
     #[allow(dead_code)]
-    pub fn create_tun(name: String) -> Result<Self, NetworkError> {
-        Self::create(name, IFF_TUN)
+    pub fn create_tun(name: String, ipv4: Ipv4Addr) -> Result<Self, NetworkError> {
+        Self::create(name, IFF_TUN, ipv4)
     }
 
-    fn create(name: String, flags: i32) -> Result<Self, NetworkError> {
+    fn create(name: String, flags: i32, ipv4: Ipv4Addr) -> Result<Self, NetworkError> {
         // #define TUNSETIFF _IOW('T', 202, int)
         nix::ioctl_write_int!(tunsetiff, b'T', 202);
 
@@ -129,6 +133,7 @@ impl TunTap {
 
         Ok(Self {
             name,
+            ipv4,
             fd,
             idx,
             poll,
@@ -169,6 +174,10 @@ impl Wan for TunTap {
 
     fn ty(&self) -> &str {
         "Tap"
+    }
+
+    fn ipv4(&self) -> Option<Ipv4Addr> {
+        Some(self.ipv4)
     }
 
     fn stats(&self) -> WanStats {
@@ -238,10 +247,12 @@ impl WanTx for TunTapHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::TunTap;
 
     #[test]
     fn open_tap() {
-        TunTap::create_tap("oathgate1").expect("unable to open tap");
+        TunTap::create_tap("oathgate1", Ipv4Addr::new(10, 11, 12, 13)).expect("unable to open tap");
     }
 }

@@ -14,6 +14,7 @@ use flume::{Receiver, Sender};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use shadesmar_net::{
+    nat::NatTable,
     protocols::ArpPacket,
     types::{EtherType, Ipv4Network, MacAddress},
     EthernetFrame, EthernetPacket, Ipv4Packet, ProtocolError, Switch, SwitchPort,
@@ -102,6 +103,9 @@ pub struct Router {
 
     /// Layer 4 protocol handlers to handle packets destined for this router
     ip4_handlers: HashMap<u8, Box<dyn ProtocolHandler>>,
+
+    /// Network Address Translation table
+    nat: NatTable,
 }
 
 /// A `RouteBuilder` provides convenience methods for building routers
@@ -181,19 +185,33 @@ impl RouterBuilder {
                 let file = format!("capture_{}_{ts}", cfg.name);
                 let file = data_dir.join(file).with_extension("pcap");
                 let wan = PcapDevice::new(&cfg.name, &file);
-                Ok(Box::new(wan) as Box<dyn Wan>)
+                Ok::<Box<dyn Wan>, NetworkError>(wan.to_boxed())
             }
             WanDevice::Tap(opts) => {
-                let wan = TunTap::create_tap(&opts.device)?;
-                Ok::<Box<dyn Wan>, NetworkError>(Box::new(wan) as Box<dyn Wan>)
+                let ipv4 = cfg
+                    .ipv4
+                    .ok_or_else(|| {
+                        NetworkError::Generic("tap wan device requires ipv4 to be set".into())
+                    })
+                    .map(|net| net.ip())?;
+
+                let wan = TunTap::create_tap(&opts.device, ipv4)?;
+                Ok(wan.to_boxed())
             }
             WanDevice::Udp(opts) => {
                 let wan = UdpDevice::connect(&cfg.name, opts.endpoint)?;
-                Ok(Box::new(wan) as Box<dyn Wan>)
+                Ok(wan.to_boxed())
             }
             WanDevice::Wireguard(opts) => {
-                let wan = WgDevice::create(&cfg.name, cfg.ipv4.ip(), opts)?;
-                Ok(Box::new(wan) as Box<dyn Wan>)
+                let ipv4 = cfg
+                    .ipv4
+                    .ok_or_else(|| {
+                        NetworkError::Generic("wireguard wan device requires ipv4 to be set".into())
+                    })
+                    .map(|net| net.ip())?;
+
+                let wan = WgDevice::create(&cfg.name, ipv4, opts)?;
+                Ok(wan.to_boxed())
             }
         };
 
@@ -255,6 +273,8 @@ impl RouterBuilder {
         let wans = Arc::new(RwLock::new(wans));
 
         let mac = MacAddress::generate();
+        let nat = NatTable::new();
+
         let handle = RouterHandle {
             mac,
             route_table,
@@ -271,6 +291,7 @@ impl RouterBuilder {
             mac,
             network,
             ip4_handlers: self.ip4_handlers,
+            nat,
         };
 
         std::thread::Builder::new()
@@ -301,10 +322,11 @@ impl Router {
                     Ok(_) => (),
                     Err(error) => tracing::warn!(?error, "unable to route lan packet"),
                 },
-                Ok(RouterMsg::FromWan4(pkt)) => {
-                    //self.table.update_stats(wan_idx, tx, rx)
-                    //self.wan_traffic_rx
-                    //    .fetch_add(pkt.len() as u64, Ordering::Relaxed);
+                Ok(RouterMsg::FromWan4(mut pkt)) => {
+                    if let Some(orig) = self.nat.get(&pkt) {
+                        tracing::trace!("[router] unmasq packet: {} --> {}", pkt.dest(), orig);
+                        pkt.unmasquerade(orig);
+                    }
 
                     if let Err(error) = self
                         .route_ip4(pkt)
@@ -422,12 +444,18 @@ impl Router {
     ///
     /// ### Arguments
     /// * `pkt` - A layer 3 (IPv4) packet to write to the ether
-    fn forward_packet(&mut self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
+    fn forward_packet(&mut self, mut pkt: Ipv4Packet) -> Result<(), NetworkError> {
         let wan_idx = self.table.get_route_wan_idx(pkt.dest())?;
 
         tracing::debug!("routing packet with dest {} over wan {wan_idx}", pkt.dest());
 
         if let Some(ref wan) = self.wans.read().get(wan_idx) {
+            if let Some(ip) = wan.ipv4() {
+                tracing::trace!("[router] masquerading packet: {} --> {}", pkt.src(), ip);
+                self.nat.insert(&pkt);
+                pkt.masquerade(ip);
+            }
+
             if let Err(error) = wan.write(pkt) {
                 tracing::warn!(?error, "unable to write to wan, dropping packet");
             }

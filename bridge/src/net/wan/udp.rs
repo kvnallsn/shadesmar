@@ -2,7 +2,7 @@
 
 use std::{
     io::{self, IoSlice},
-    net::{SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
     os::fd::{AsRawFd, RawFd},
 };
 
@@ -50,6 +50,10 @@ where
 
     fn ty(&self) -> &str {
         "UDP"
+    }
+
+    fn ipv4(&self) -> Option<Ipv4Addr> {
+        None
     }
 
     fn stats(&self) -> WanStats {

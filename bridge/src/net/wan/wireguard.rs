@@ -24,7 +24,7 @@ use nix::sys::{
     timerfd::{ClockId, Expiration, TimerFd, TimerFlags, TimerSetTimeFlags},
 };
 use serde::{Deserialize, Serialize};
-use shadesmar_net::{nat::NatTable, Ipv4Header, Ipv4Packet};
+use shadesmar_net::{Ipv4Header, Ipv4Packet};
 
 use crate::net::{router::RouterTx, NetworkError};
 
@@ -58,9 +58,6 @@ pub struct WgDevice {
 
     /// Poller to watch for events
     poll: Poll,
-
-    /// Maps & tracks outbound connections
-    nat: NatTable,
 
     /// Cache used to store/rebuild fragmented packets
     cache: HashMap<u16, Ipv4Packet>,
@@ -136,7 +133,6 @@ impl WgDevice {
             rx: Some(rx),
             handle,
             poll,
-            nat: NatTable::new(),
             cache: HashMap::new(),
             stats,
         })
@@ -197,26 +193,8 @@ impl WgDevice {
                     },
                 };
 
-                // undo nat'd packets
-                if let Some(mut pkt) = pkt {
-                    if let Some(orig) = self.nat.get(&pkt) {
-                        tracing::trace!(ip = ?orig, "[wg] setting original ipv4 address");
-                        pkt.unmasquerade(orig);
-                        router.route_ipv4(pkt);
-                    } else {
-                        tracing::warn!(
-                            protocol = pkt.protocol(),
-                            src = %pkt.src(),
-                            dst = %pkt.dest(),
-                            id = %pkt.id(),
-                            flags = %pkt.flags(),
-                            hdrlen = %pkt.header_length(),
-                            length = %pkt.len(),
-                            "[wg] no nat entry found",
-                        );
-
-                        tracing::trace!("packet bytes: {:02x?}", &pkt.as_bytes()[..28]);
-                    }
+                if let Some(pkt) = pkt {
+                    router.route_ipv4(pkt);
                 }
             }
             TunnResult::WriteToTunnelV6(pkt, ip) => {
@@ -237,6 +215,10 @@ impl Wan for WgDevice {
 
     fn ty(&self) -> &str {
         "WireGuard"
+    }
+
+    fn ipv4(&self) -> Option<Ipv4Addr> {
+        Some(self.ipv4)
     }
 
     fn stats(&self) -> WanStats {
@@ -334,9 +316,9 @@ impl Wan for WgDevice {
                     }
                     TOKEN_WAKER => {
                         tracing::trace!("[wg] woke up!");
-                        for mut pkt in rx.drain() {
-                            self.nat.insert(&pkt);
-                            pkt.masquerade(self.ipv4);
+                        for pkt in rx.drain() {
+                            //self.nat.insert(&pkt);
+                            //pkt.masquerade(self.ipv4);
                             tracing::trace!(src = ?pkt.src(), dst = ?pkt.dest(), "[wg] encapsulating packet");
                             let action = self.tun.encapsulate(pkt.as_bytes(), &mut wg_buf);
                             self.handle_tun_result(action, &router, &sock)?;

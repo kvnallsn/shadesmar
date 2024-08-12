@@ -6,6 +6,7 @@ mod udp;
 mod wireguard;
 
 use std::{
+    net::Ipv4Addr,
     os::unix::thread::JoinHandleExt,
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -33,6 +34,9 @@ pub struct WanHandle {
 
     /// Type of WAN device (i.e., WireGuard)
     ty: String,
+
+    /// IPv4 Address of the WAN device
+    ipv4: Option<Ipv4Addr>,
 
     /// Thread running the WAN device
     thread: JoinHandle<()>,
@@ -72,6 +76,13 @@ where
     /// Returns the type of this WAN connection
     fn ty(&self) -> &str;
 
+    /// Returns the IPv4 address assigned to this WAN device
+    ///
+    /// Note: in the case of VPNs (e.g., WireGuard) this is not the same
+    /// as the exit/public IPv4 but rather the internal IPv4 of the adapter
+    /// itself
+    fn ipv4(&self) -> Option<Ipv4Addr>;
+
     /// Returns the number of bytes transmitted (tx) and received (tx)
     /// over this WAN connection.
     ///
@@ -104,6 +115,7 @@ where
         let ty = self.ty().to_owned();
         let name = self.name().to_owned();
         let stats = self.stats();
+        let ipv4 = self.ipv4();
 
         let thread = std::thread::Builder::new()
             .name(format!("wan-{}", self.name()))
@@ -115,10 +127,19 @@ where
         Ok(WanHandle {
             name,
             ty,
+            ipv4,
             thread,
             tx,
             stats,
         })
+    }
+
+    /// Converts a WAN device into a boxed WAN (aka type erasure)
+    fn to_boxed(self) -> Box<dyn Wan>
+    where
+        Self: Sized,
+    {
+        Box::new(self)
     }
 }
 
@@ -177,6 +198,11 @@ impl WanHandle {
     /// Returns the type of WAN attached to this WAN handle
     pub fn ty(&self) -> &str {
         self.ty.as_str()
+    }
+
+    /// Returns the IPv4 address of this WAN device
+    pub fn ipv4(&self) -> Option<Ipv4Addr> {
+        self.ipv4
     }
 
     /// Returns true if this WAN is running, false if it has stopped

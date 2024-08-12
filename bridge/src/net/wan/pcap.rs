@@ -1,6 +1,6 @@
 //! WAN adapter to capture traffic (and drop it)
 
-use std::{borrow::Cow, fs::File, path::PathBuf, time::UNIX_EPOCH};
+use std::{borrow::Cow, fs::File, net::Ipv4Addr, path::PathBuf, time::UNIX_EPOCH};
 
 use parking_lot::Mutex;
 use pcap_file::{
@@ -53,6 +53,10 @@ impl Wan for PcapDevice {
 
     fn ty(&self) -> &str {
         "Pcap"
+    }
+
+    fn ipv4(&self) -> Option<Ipv4Addr> {
+        None
     }
 
     fn stats(&self) -> super::WanStats {
