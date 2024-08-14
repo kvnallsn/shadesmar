@@ -17,7 +17,6 @@ pub struct UdpDevice {
     name: String,
     sock: UdpSocket,
     dests: Vec<SocketAddr>,
-    stats: WanStats,
 }
 
 pub struct UdpDeviceHandle {
@@ -30,13 +29,7 @@ impl UdpDevice {
         let name = name.into();
         let sock = UdpSocket::bind("0.0.0.0:0")?;
         let dests = addrs.to_socket_addrs()?.collect::<Vec<_>>();
-        let stats = WanStats::new();
-        Ok(Self {
-            name,
-            sock,
-            dests,
-            stats,
-        })
+        Ok(Self { name, sock, dests })
     }
 }
 
@@ -56,10 +49,6 @@ where
         None
     }
 
-    fn stats(&self) -> WanStats {
-        self.stats.clone()
-    }
-
     fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
         let handle = UdpDeviceHandle {
             sock: self.sock.as_raw_fd(),
@@ -69,7 +58,7 @@ where
         Ok(Box::new(handle))
     }
 
-    fn run(self: Box<Self>, router: RouterTx) -> Result<(), NetworkError> {
+    fn run(self: Box<Self>, router: RouterTx, _stats: WanStats) -> Result<(), NetworkError> {
         let mut buf = [0u8; 1600];
         loop {
             let (sz, peer) = self.sock.recv_from(&mut buf)?;

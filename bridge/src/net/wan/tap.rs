@@ -53,9 +53,6 @@ pub struct TunTap {
 
     /// Mac Address of the device
     mac: MacAddress,
-
-    /// Statistics about this tun/tap device
-    stats: WanStats,
 }
 
 pub struct TunTapHandle {
@@ -140,7 +137,6 @@ impl TunTap {
             tx,
             rx: Some(rx),
             mac,
-            stats: WanStats::new(),
         })
     }
 
@@ -180,10 +176,6 @@ impl Wan for TunTap {
         Some(self.ipv4)
     }
 
-    fn stats(&self) -> WanStats {
-        self.stats.clone()
-    }
-
     fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
         let waker = Waker::new(self.poll.registry(), TOKEN_WRITE)?;
         self.poll.registry().register(
@@ -200,7 +192,7 @@ impl Wan for TunTap {
         Ok(Box::new(handle))
     }
 
-    fn run(mut self: Box<Self>, _router: RouterTx) -> Result<(), NetworkError> {
+    fn run(mut self: Box<Self>, _router: RouterTx, _stats: WanStats) -> Result<(), NetworkError> {
         let mut events = Events::with_capacity(MAX_EVENTS_CAPACITY);
 
         let rx = self.rx.take().unwrap();

@@ -83,12 +83,6 @@ where
     /// itself
     fn ipv4(&self) -> Option<Ipv4Addr>;
 
-    /// Returns the number of bytes transmitted (tx) and received (tx)
-    /// over this WAN connection.
-    ///
-    /// Return value: (tx, rx)
-    fn stats(&self) -> WanStats;
-
     /// Returns a transmitter/sender channel to queue packets for transmission
     ///
     /// If the channel is closed, or cannot otherwise be used, returns an error
@@ -101,7 +95,8 @@ where
     ///
     /// ### Arguments
     /// * `router` - Trasmit/send channel to queue packets for routing
-    fn run(self: Box<Self>, router: RouterTx) -> Result<(), NetworkError>;
+    /// * `stats` - WAN statistics
+    fn run(self: Box<Self>, router: RouterTx, stats: WanStats) -> Result<(), NetworkError>;
 
     /// Convenience function to spawn a thread to run the WAN device
     ///
@@ -114,14 +109,17 @@ where
         let tx = self.tx()?;
         let ty = self.ty().to_owned();
         let name = self.name().to_owned();
-        let stats = self.stats();
         let ipv4 = self.ipv4();
 
+        let stats = WanStats::new();
         let thread = std::thread::Builder::new()
             .name(format!("wan-{}", self.name()))
-            .spawn(move || match self.run(router) {
-                Ok(_) => tracing::trace!("wan thread exited successfully"),
-                Err(error) => tracing::warn!(?error, "unable to run wan thread"),
+            .spawn({
+                let stats = stats.clone();
+                move || match self.run(router, stats) {
+                    Ok(_) => tracing::trace!("wan thread exited successfully"),
+                    Err(error) => tracing::warn!(?error, "unable to run wan thread"),
+                }
             })?;
 
         Ok(WanHandle {

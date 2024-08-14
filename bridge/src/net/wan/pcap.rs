@@ -20,12 +20,10 @@ use super::{Wan, WanStats, WanTx};
 pub struct PcapDevice {
     name: String,
     path: PathBuf,
-    stats: WanStats,
 }
 
 pub struct PcapDeviceHandle {
     writer: Mutex<PcapWriter<File>>,
-    stats: WanStats,
 }
 
 impl PcapDevice {
@@ -41,8 +39,7 @@ impl PcapDevice {
     {
         let name = name.into();
         let path = path.into();
-        let stats = WanStats::new();
-        Self { name, path, stats }
+        Self { name, path }
     }
 }
 
@@ -57,10 +54,6 @@ impl Wan for PcapDevice {
 
     fn ipv4(&self) -> Option<Ipv4Addr> {
         None
-    }
-
-    fn stats(&self) -> super::WanStats {
-        self.stats.clone()
     }
 
     fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
@@ -84,11 +77,10 @@ impl Wan for PcapDevice {
         let writer = PcapWriter::with_header(file, header)?;
         Ok(Box::new(PcapDeviceHandle {
             writer: Mutex::new(writer),
-            stats: self.stats.clone(),
         }))
     }
 
-    fn run(self: Box<Self>, _router: RouterTx) -> Result<(), NetworkError> {
+    fn run(self: Box<Self>, _router: RouterTx, _stats: WanStats) -> Result<(), NetworkError> {
         tracing::debug!("pcap wan thread exiting, nothing to do (pcap drops all packets)");
         Ok(())
     }
@@ -96,7 +88,7 @@ impl Wan for PcapDevice {
 
 impl WanTx for PcapDeviceHandle {
     fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
-        self.stats.tx_add(pkt.len());
+        //self.stats.tx_add(pkt.len());
         let mut wr = self.writer.lock();
         wr.write_packet(&PcapPacket {
             timestamp: UNIX_EPOCH.elapsed().unwrap(),

@@ -61,9 +61,6 @@ pub struct WgDevice {
 
     /// Cache used to store/rebuild fragmented packets
     cache: HashMap<u16, Ipv4Packet>,
-
-    /// WAN statistics
-    stats: WanStats,
 }
 
 /// A handle/reference for the controller thread to communicate
@@ -118,7 +115,6 @@ impl WgDevice {
         let waker = Waker::new(poll.registry(), TOKEN_WAKER)?;
 
         let name = name.into();
-        let stats = WanStats::new();
         let (tx, rx) = flume::unbounded();
         let handle = WgHandle {
             tx,
@@ -134,7 +130,6 @@ impl WgDevice {
             handle,
             poll,
             cache: HashMap::new(),
-            stats,
         })
     }
 
@@ -147,6 +142,7 @@ impl WgDevice {
         action: TunnResult,
         router: &RouterTx,
         sock: &UdpSocket,
+        stats: &WanStats,
     ) -> Result<bool, NetworkError> {
         let mut to_network = false;
 
@@ -158,12 +154,12 @@ impl WgDevice {
             TunnResult::Done => tracing::trace!("[wg] no action"),
             TunnResult::WriteToNetwork(pkt) => {
                 tracing::trace!("[wg] write {} bytes to network", pkt.len());
-                self.stats.tx_add(pkt.len() as u64);
+                stats.tx_add(pkt.len() as u64);
                 sock.send_to(pkt, self.endpoint)?;
                 to_network = true;
             }
             TunnResult::WriteToTunnelV4(pkt, ip) => {
-                self.stats.rx_add(pkt.len() as u64);
+                stats.rx_add(pkt.len() as u64);
                 let hdr = Ipv4Header::extract_from_slice(&pkt)?;
                 tracing::trace!(src = ?ip, dst = ?hdr.dst, "[wg] write {} bytes to tunnel", pkt.len());
                 let pkt = Ipv4Packet::parse(pkt.to_vec())?;
@@ -198,7 +194,7 @@ impl WgDevice {
                 }
             }
             TunnResult::WriteToTunnelV6(pkt, ip) => {
-                self.stats.rx_add(pkt.len() as u64);
+                stats.rx_add(pkt.len() as u64);
                 tracing::trace!(?ip, "[wg] write {} bytes to tunnel", pkt.len());
                 router.route_ipv6(pkt.to_vec());
             }
@@ -221,15 +217,11 @@ impl Wan for WgDevice {
         Some(self.ipv4)
     }
 
-    fn stats(&self) -> WanStats {
-        self.stats.clone()
-    }
-
     fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
         Ok(Box::new(self.handle.clone()))
     }
 
-    fn run(mut self: Box<Self>, router: RouterTx) -> Result<(), NetworkError> {
+    fn run(mut self: Box<Self>, router: RouterTx, stats: WanStats) -> Result<(), NetworkError> {
         let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
         sock.set_nonblocking(true)?;
         let mut sock = UdpSocket::from_std(sock);
@@ -295,7 +287,9 @@ impl Wan for WgDevice {
                                             &mut wg_buf,
                                         );
 
-                                        if !self.handle_tun_result(action, &router, &sock)? {
+                                        if !self
+                                            .handle_tun_result(action, &router, &sock, &stats)?
+                                        {
                                             tracing::trace!("[wg] no queued packets!");
                                             break 'wg;
                                         } else {
@@ -321,14 +315,14 @@ impl Wan for WgDevice {
                             //pkt.masquerade(self.ipv4);
                             tracing::trace!(src = ?pkt.src(), dst = ?pkt.dest(), "[wg] encapsulating packet");
                             let action = self.tun.encapsulate(pkt.as_bytes(), &mut wg_buf);
-                            self.handle_tun_result(action, &router, &sock)?;
+                            self.handle_tun_result(action, &router, &sock, &stats)?;
                         }
                     }
                     TOKEN_TIMER => {
                         tracing::trace!("[wg] updating timers");
                         timer.wait()?;
                         let action = self.tun.update_timers(&mut wg_buf);
-                        self.handle_tun_result(action, &router, &sock)?;
+                        self.handle_tun_result(action, &router, &sock, &stats)?;
                     }
                     TOKEN_SFD => match sfd.read_signal() {
                         Err(error) => tracing::warn!(%error, "unable to read signal"),
