@@ -25,9 +25,15 @@ pub struct DhcpServer {
 }
 
 impl DhcpServer {
+    /// Constructs a new DHCP server to serve IPv4 address for a network
+    ///
+    /// ### Arguments
+    /// * `network` - IPv4 network (cidr) for which to serve IPv4 addresses
+    /// * `cfg` - DHCP server configuration options
     pub fn new(network: Ipv4Network, cfg: &DhcpConfig) -> Self {
         if !network.contains(cfg.start) || !network.contains(cfg.end) {
             // TODO: return error
+            panic!("dhcp start / end address outside configured network");
         }
 
         let mut next_avail = Ipv4Network::new(cfg.start, network.subnet_mask_bits());
@@ -52,10 +58,23 @@ impl DhcpServer {
         }
     }
 
+    /// Attempts to lease an IP to a client
+    ///
+    /// There are a couple scenarioes that need to be handled when we received a DHCPREQUEST:
+    /// - The requested IP is not avaialble --> lease next available IP
+    /// - The requested IP is not in the network's CIDR --> lease next available ip
+    /// - The requested IP is available AND in the network's CIDR --> lease requested ip
+    ///
+    /// An IP is defined as available if it has not been leased OR a previous reservation
+    /// for the requested ip is mapped in the MAC cache table
+    ///
+    /// ### Arguments
+    /// * `msg` - DHCP request message
     pub fn lease_ip(&mut self, msg: &v4::Message) -> Option<Ipv4Network> {
         let client_mac = MacAddress::parse(msg.chaddr()).unwrap();
 
         let ip = match self.get_requested_ip(msg) {
+            Some(ria) if !self.network.contains(ria) => self.available.pop_front(),
             Some(ria) => match self.leased.get(&ria) {
                 None => {
                     self.available.retain(|ip| *ip != ria);
@@ -70,6 +89,8 @@ impl DhcpServer {
             None => self.available.pop_front(),
         };
 
+        tracing::debug!("[dhcp] leasing {ip:?} to {client_mac}");
+
         match ip {
             Some(ip) => {
                 self.leased.insert(ip, client_mac);
@@ -82,6 +103,10 @@ impl DhcpServer {
         }
     }
 
+    /// Extracts the requested IP address from the DHCP message
+    ///
+    /// ### Arguments
+    /// * `msg` - DHCP message
     fn get_requested_ip(&self, msg: &v4::Message) -> Option<Ipv4Addr> {
         match msg.opts().get(v4::OptionCode::RequestedIpAddress) {
             Some(v4::DhcpOption::RequestedIpAddress(ip)) => Some(*ip),
@@ -89,6 +114,10 @@ impl DhcpServer {
         }
     }
 
+    /// Handles a DHCPDISCOVER message
+    ///
+    /// ### Arguments
+    /// * `msg` - DHCPDISCOVER message
     pub fn handle_discover(&mut self, msg: v4::Message) -> Result<v4::Message, ProtocolError> {
         tracing::trace!("[dhcp] handling discover message");
         let ip = match self.lease_ip(&msg) {
@@ -103,6 +132,10 @@ impl DhcpServer {
         Ok(msg)
     }
 
+    /// Handles a DHCPREQUEST message
+    ///
+    /// ### Arguments
+    /// * `msg` - DHCPREQUEST message
     pub fn handle_request(&mut self, msg: v4::Message) -> Result<v4::Message, ProtocolError> {
         tracing::trace!("[dhcp] handling request message");
 
@@ -118,6 +151,12 @@ impl DhcpServer {
         Ok(msg)
     }
 
+    /// Builds a DHCP message with the specified parameters
+    ///
+    /// ### Arguments
+    /// * `msg` - DHCP message to which we're responding
+    /// * `ip` - IPv4 network the DHCP is serving
+    /// * `ty` - Type of DHCP message to build
     fn build_message(
         &self,
         msg: &v4::Message,
