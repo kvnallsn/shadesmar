@@ -9,7 +9,7 @@ use pcap_file::{
 };
 use shadesmar_net::Ipv4Packet;
 
-use crate::net::{router::RouterTx, NetworkError};
+use crate::net::{router::RouterTx, wan::WanThreadHandle, NetworkError};
 
 use super::{Wan, WanStats, WanTx};
 
@@ -18,7 +18,6 @@ use super::{Wan, WanStats, WanTx};
 /// This device does not respond to any traffic, effectively
 /// dropping all traffic it sees
 pub struct PcapDevice {
-    name: String,
     path: PathBuf,
 }
 
@@ -32,31 +31,24 @@ impl PcapDevice {
     /// ### Arguments
     /// * `name` - Name of WAN device
     /// * `path` - Path to pcap file on disk (aka where to save traffic)
-    pub fn new<S, P>(name: S, path: P) -> Self
-    where
-        S: Into<String>,
-        P: Into<PathBuf>,
-    {
-        let name = name.into();
+    pub fn new<P: Into<PathBuf>>(path: P) -> Self {
         let path = path.into();
-        Self { name, path }
+        Self { path }
     }
 }
 
 impl Wan for PcapDevice {
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
-    fn ty(&self) -> &str {
-        "Pcap"
-    }
-
     fn ipv4(&self) -> Option<Ipv4Addr> {
         None
     }
 
-    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
+    fn spawn(
+        &self,
+        _router: RouterTx,
+        _stats: WanStats,
+    ) -> Result<super::WanThreadHandle, NetworkError> {
+        tracing::debug!("pcap wan thread exiting, nothing to do (pcap drops all packets)");
+
         let file = File::options()
             .create(true)
             .write(true)
@@ -75,14 +67,13 @@ impl Wan for PcapDevice {
         };
 
         let writer = PcapWriter::with_header(file, header)?;
-        Ok(Box::new(PcapDeviceHandle {
+        let handle = PcapDeviceHandle {
             writer: Mutex::new(writer),
-        }))
-    }
+        };
 
-    fn run(self: Box<Self>, _router: RouterTx, _stats: WanStats) -> Result<(), NetworkError> {
-        tracing::debug!("pcap wan thread exiting, nothing to do (pcap drops all packets)");
-        Ok(())
+        let thread = std::thread::spawn(|| {});
+
+        Ok(WanThreadHandle::new(thread, handle))
     }
 }
 

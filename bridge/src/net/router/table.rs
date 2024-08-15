@@ -12,7 +12,7 @@ use shadesmar_net::types::Ipv4Network;
 
 use crate::net::NetworkError;
 
-use super::Wan;
+use super::WanHandle;
 
 /// A `RouteTable` that can be freely shared between threads
 pub type ArcRouteTable = Arc<RouteTable>;
@@ -37,7 +37,7 @@ impl RouteTable {
     ///
     /// ### Arguments
     /// * `routes` - Table matching CIDRs to WAN interface ids
-    pub fn new(routes: HashMap<Ipv4Network, String>, wans: &[Box<dyn Wan>]) -> ArcRouteTable {
+    pub fn new(routes: HashMap<Ipv4Network, String>, wans: &[WanHandle]) -> ArcRouteTable {
         let mut table = IpLookupTable::new();
         let stats = HashMap::new();
         let mut names = HashMap::default();

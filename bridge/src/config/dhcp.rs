@@ -5,7 +5,7 @@ use std::{net::Ipv4Addr, str::FromStr};
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the internal DHCP server
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct DhcpConfig {
     /// Start address for the DHCP pool
     pub start: Ipv4Addr,

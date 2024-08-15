@@ -21,7 +21,7 @@ use shadesmar_net::{
 };
 use table::{ArcRouteTable, RouteTable};
 
-use crate::config::{WanConfig, WanDevice};
+use crate::config::WanConfig;
 pub use crate::net::{
     switch::VirtioSwitch,
     wan::{Wan, WanHandle},
@@ -29,10 +29,7 @@ pub use crate::net::{
 
 use self::handler::ProtocolHandler;
 
-use super::{
-    wan::{PcapDevice, TunTap, UdpDevice, WgDevice},
-    NetworkError,
-};
+use super::NetworkError;
 
 const IPV4_HDR_SZ: usize = 20;
 
@@ -116,7 +113,7 @@ pub struct RouterBuilder {
     ip4_handlers: HashMap<u8, Box<dyn ProtocolHandler>>,
 
     /// Wide Area Network (WAN) connections
-    wans: Vec<Box<dyn Wan>>,
+    wans: Vec<WanConfig>,
 
     /// WAN routing table, maps IPv4 cidrs to wan index
     table: HashMap<Ipv4Network, String>,
@@ -171,56 +168,10 @@ impl RouterBuilder {
     /// IP address does not reside inside the router's subnet / network.
     ///
     /// ### Arguments
-    /// * `wans` - Upstream providers for unknown/non-local packets
-    /// * `data_dir` - Path to data directory to store any wan-persistent files
-    pub fn register_wans(
-        mut self,
-        wans: &[WanConfig],
-        data_dir: &Path,
-    ) -> Result<Self, NetworkError> {
-        let parse_wan = |cfg: &WanConfig| match &cfg.device {
-            WanDevice::Pcap => {
-                // generate a name for the pcap file
-                let ts = jiff::Timestamp::now().as_second();
-                let file = format!("capture_{}_{ts}", cfg.name);
-                let file = data_dir.join(file).with_extension("pcap");
-                let wan = PcapDevice::new(&cfg.name, &file);
-                Ok::<Box<dyn Wan>, NetworkError>(wan.to_boxed())
-            }
-            WanDevice::Tap(opts) => {
-                let ipv4 = cfg
-                    .ipv4
-                    .ok_or_else(|| {
-                        NetworkError::Generic("tap wan device requires ipv4 to be set".into())
-                    })
-                    .map(|net| net.ip())?;
-
-                let wan = TunTap::create_tap(&opts.device, ipv4)?;
-                Ok(wan.to_boxed())
-            }
-            WanDevice::Udp(opts) => {
-                let wan = UdpDevice::connect(&cfg.name, opts.endpoint)?;
-                Ok(wan.to_boxed())
-            }
-            WanDevice::Wireguard(opts) => {
-                let ipv4 = cfg
-                    .ipv4
-                    .ok_or_else(|| {
-                        NetworkError::Generic("wireguard wan device requires ipv4 to be set".into())
-                    })
-                    .map(|net| net.ip())?;
-
-                let wan = WgDevice::create(&cfg.name, ipv4, opts)?;
-                Ok(wan.to_boxed())
-            }
-        };
-
-        for wan in wans {
-            let wan = parse_wan(wan)?;
-            self.wans.push(wan);
-        }
-
-        Ok(self)
+    /// * `wans` - Upstream provider configuration for unknown/non-local packets
+    pub fn register_wans(mut self, wans: &[WanConfig]) -> Self {
+        self.wans.extend_from_slice(wans);
+        self
     }
 
     /// Install a new routing table for WAN connections
@@ -257,19 +208,23 @@ impl RouterBuilder {
         self,
         network: Ipv4Network,
         switch: VirtioSwitch,
+        data_dir: &Path,
     ) -> Result<RouterHandle, NetworkError> {
         let (tx, rx) = RouterTx::new();
 
-        let table = RouteTable::new(self.table, &self.wans);
+        let mut wans = Vec::with_capacity(self.wans.len());
+        for wan in self.wans {
+            let mut wan = WanHandle::new(wan, data_dir)?;
+            wan.start(tx.clone())?;
+
+            wans.push(wan);
+        }
+
+        let table = RouteTable::new(self.table, &wans);
         let route_table = Arc::clone(&table);
 
         let port = switch.connect(tx.clone());
 
-        let mut wans = Vec::with_capacity(self.wans.len());
-        for wan in self.wans {
-            let wan_handle = wan.spawn(tx.clone())?;
-            wans.push(wan_handle);
-        }
         let wans = Arc::new(RwLock::new(wans));
 
         let mac = MacAddress::generate();

@@ -8,6 +8,7 @@ mod wireguard;
 use std::{
     net::Ipv4Addr,
     os::unix::thread::JoinHandleExt,
+    path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -17,6 +18,8 @@ use std::{
 
 use nix::sys::signal::Signal;
 use shadesmar_net::Ipv4Packet;
+
+use crate::config::{WanConfig, WanDevice};
 
 pub use self::{
     pcap::PcapDevice,
@@ -38,14 +41,22 @@ pub struct WanHandle {
     /// IPv4 Address of the WAN device
     ipv4: Option<Ipv4Addr>,
 
+    /// WAN device settings / parameters
+    device: Box<dyn Wan>,
+
+    /// Thread running the WAN device
+    thread: Option<WanThreadHandle>,
+
+    /// Send/Receive stats
+    stats: WanStats,
+}
+
+pub struct WanThreadHandle {
     /// Thread running the WAN device
     thread: JoinHandle<()>,
 
     /// Transmit/sender channel to queue packets for transmission
     tx: Box<dyn WanTx>,
-
-    /// Send/Receive stats
-    stats: WanStats,
 }
 
 /// Represents statistics for a WAN device
@@ -70,33 +81,12 @@ pub trait Wan: Send + Sync
 where
     Self: 'static,
 {
-    /// Human-friendly name of the WAN device
-    fn name(&self) -> &str;
-
-    /// Returns the type of this WAN connection
-    fn ty(&self) -> &str;
-
     /// Returns the IPv4 address assigned to this WAN device
     ///
     /// Note: in the case of VPNs (e.g., WireGuard) this is not the same
     /// as the exit/public IPv4 but rather the internal IPv4 of the adapter
     /// itself
     fn ipv4(&self) -> Option<Ipv4Addr>;
-
-    /// Returns a transmitter/sender channel to queue packets for transmission
-    ///
-    /// If the channel is closed, or cannot otherwise be used, returns an error
-    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError>;
-
-    /// Main receiver loop for a WAN device
-    ///
-    /// This function should receive traffic from the distant end and queue it for
-    /// routing by sending it over router's TX channel
-    ///
-    /// ### Arguments
-    /// * `router` - Trasmit/send channel to queue packets for routing
-    /// * `stats` - WAN statistics
-    fn run(self: Box<Self>, router: RouterTx, stats: WanStats) -> Result<(), NetworkError>;
 
     /// Convenience function to spawn a thread to run the WAN device
     ///
@@ -105,32 +95,7 @@ where
     ///
     /// ### Arguments
     /// * `router` - Trasmit/send channel to queue packets for routing
-    fn spawn(self: Box<Self>, router: RouterTx) -> Result<WanHandle, NetworkError> {
-        let tx = self.tx()?;
-        let ty = self.ty().to_owned();
-        let name = self.name().to_owned();
-        let ipv4 = self.ipv4();
-
-        let stats = WanStats::new();
-        let thread = std::thread::Builder::new()
-            .name(format!("wan-{}", self.name()))
-            .spawn({
-                let stats = stats.clone();
-                move || match self.run(router, stats) {
-                    Ok(_) => tracing::trace!("wan thread exited successfully"),
-                    Err(error) => tracing::warn!(?error, "unable to run wan thread"),
-                }
-            })?;
-
-        Ok(WanHandle {
-            name,
-            ty,
-            ipv4,
-            thread,
-            tx,
-            stats,
-        })
-    }
+    fn spawn(&self, router: RouterTx, stats: WanStats) -> Result<WanThreadHandle, NetworkError>;
 
     /// Converts a WAN device into a boxed WAN (aka type erasure)
     fn to_boxed(self) -> Box<dyn Wan>
@@ -188,6 +153,67 @@ impl WanStats {
 }
 
 impl WanHandle {
+    /// Creates a new WAN device
+    ///
+    /// A WAN device represents a connection to the outside world and
+    /// is used to forward packets to non-local destinations.
+    ///
+    /// ### Arguments
+    /// * `name` - Name of this WAN device
+    /// * `ty` - Type of WAN device
+    /// * `wan` - WAN device settings
+    pub fn new<P: AsRef<Path>>(cfg: WanConfig, data_dir: P) -> Result<Self, NetworkError> {
+        let data_dir = data_dir.as_ref();
+
+        let (ty, device) = match cfg.device {
+            WanDevice::Pcap => {
+                // generate a name for the pcap file
+                let ts = jiff::Timestamp::now().as_second();
+                let file = format!("capture_{}_{ts}", cfg.name);
+                let file = data_dir.join(file).with_extension("pcap");
+                let wan = PcapDevice::new(&file);
+                ("blackhole", wan.to_boxed())
+            }
+            WanDevice::Tap(opts) => {
+                let ipv4 = cfg
+                    .ipv4
+                    .ok_or_else(|| {
+                        NetworkError::Generic("tap wan device requires ipv4 to be set".into())
+                    })
+                    .map(|net| net.ip())?;
+
+                let wan = TunTap::create_tap(&opts.device, ipv4)?;
+                ("tap", wan.to_boxed())
+            }
+            WanDevice::Udp(opts) => {
+                let wan = UdpDevice::connect(&cfg.name, opts.endpoint)?;
+                ("udp", wan.to_boxed())
+            }
+            WanDevice::Wireguard(opts) => {
+                let ipv4 = cfg
+                    .ipv4
+                    .ok_or_else(|| {
+                        NetworkError::Generic("wireguard wan device requires ipv4 to be set".into())
+                    })
+                    .map(|net| net.ip())?;
+
+                let wan = WgDevice::create(&cfg.name, ipv4, &opts)?;
+                ("wireguard", wan.to_boxed())
+            }
+        };
+
+        let stats = WanStats::new();
+
+        Ok(Self {
+            name: cfg.name,
+            ty: ty.into(),
+            device,
+            stats,
+            thread: None,
+            ipv4: cfg.ipv4.map(|net| net.ip()),
+        })
+    }
+
     /// Returns the name of the WAN device
     pub fn name(&self) -> &str {
         self.name.as_str()
@@ -205,7 +231,10 @@ impl WanHandle {
 
     /// Returns true if this WAN is running, false if it has stopped
     pub fn is_running(&self) -> bool {
-        !self.thread.is_finished()
+        self.thread
+            .as_ref()
+            .map(|t| !t.thread.is_finished())
+            .unwrap_or(false)
     }
 
     /// If the WAN is running, attempts to queue the packet for transmission
@@ -213,8 +242,13 @@ impl WanHandle {
     /// ### Arguments
     /// * `pkt`- IPv4 packet to queue for transmission
     pub fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
-        if !self.thread.is_finished() {
-            self.tx.write(pkt)?;
+        if let Some(ref thread) = self.thread {
+            thread.tx.write(pkt)?;
+        } else {
+            tracing::debug!(
+                "attempted to write packet to non-running wan ({})",
+                self.name
+            );
         }
 
         Ok(())
@@ -230,11 +264,40 @@ impl WanHandle {
         self.stats.rx()
     }
 
+    /// Starts the WAN device, if not already running
+    ///
+    /// Spawns a thread to handle the send/receive functions of the WAN device
+    ///
+    /// ### Arguments
+    /// * `router` - Transmit/send channel to router
+    pub fn start(&mut self, router: RouterTx) -> Result<(), NetworkError> {
+        tracing::debug!("starting wan: {}", self.name);
+        if self.is_running() {
+            tracing::debug!("wan already running: {}", self.name);
+            return Ok(());
+        }
+
+        let handle = self.device.spawn(router, self.stats.clone())?;
+        self.thread = Some(handle);
+
+        Ok(())
+    }
+
     /// Attempts to stop this WAN device
     pub fn stop(&self) -> Result<(), NetworkError> {
-        tracing::debug!("attempting to stop wan thread");
-        let tid = self.thread.as_pthread_t();
-        nix::sys::pthread::pthread_kill(tid, Signal::SIGTERM)?;
+        if let Some(ref t) = self.thread {
+            tracing::debug!("attempting to stop wan thread");
+            let tid = t.thread.as_pthread_t();
+            nix::sys::pthread::pthread_kill(tid, Signal::SIGTERM)?;
+        }
         Ok(())
+    }
+}
+
+impl WanThreadHandle {
+    /// Creates a new handle to the thread running the WAN device
+    pub fn new<W: WanTx + 'static>(thread: JoinHandle<()>, tx: W) -> Self {
+        let tx = Box::new(tx);
+        Self { thread, tx }
     }
 }

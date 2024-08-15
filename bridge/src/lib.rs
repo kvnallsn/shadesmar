@@ -233,11 +233,11 @@ impl Bridge {
 
         // spawn thread to receive messages/packets
         let router = Router::builder()
-            .register_wans(&self.cfg.wan, &self.data_dir)?
+            .register_wans(&self.cfg.wan)
             .routing_table(&self.cfg.router.table)
             .register_l4_proto_handler(IcmpHandler::default())
             .register_l4_proto_handler(udp_handler)
-            .spawn(self.cfg.router.ipv4, switch.clone())?;
+            .spawn(self.cfg.router.ipv4, switch.clone(), &self.data_dir)?;
 
         let mut poller = Poll::new()?;
         poller

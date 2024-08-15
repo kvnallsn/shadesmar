@@ -23,7 +23,7 @@ pub struct Config {
 }
 
 /// Contains all information needed to initialize a WAN connection
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub struct WanConfig {
     /// Human-friendly name for WAN connection
@@ -39,7 +39,7 @@ pub struct WanConfig {
 }
 
 /// Various different types of WAN devices supported by shadesmar
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum WanDevice {
     /// Pcap device (drops all packets)
@@ -55,17 +55,17 @@ pub enum WanDevice {
     Wireguard(WgConfig),
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TapConfig {
     pub device: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UdpConfig {
     pub endpoint: SocketAddr,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RouterConfig {
     pub ipv4: Ipv4Network,
     pub dhcp: DhcpConfig,
@@ -73,7 +73,7 @@ pub struct RouterConfig {
     pub table: HashMap<Ipv4Network, String>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct VirtioConfig {
     pub queues: u8,
 }

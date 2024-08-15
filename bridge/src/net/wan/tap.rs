@@ -18,9 +18,10 @@ use nix::{
     libc::{IFF_NO_PI, IFF_TAP, IFF_TUN, IFNAMSIZ, SIOCGIFHWADDR},
     net::if_::if_nametoindex,
 };
-use shadesmar_net::{types::MacAddress, Ipv4Packet};
+use parking_lot::Mutex;
+use shadesmar_net::Ipv4Packet;
 
-use super::{Wan, WanStats, WanTx};
+use super::{Wan, WanStats, WanThreadHandle, WanTx};
 
 /// Maximum number of events mio can processes at one time
 const MAX_EVENTS_CAPACITY: usize = 10;
@@ -37,22 +38,10 @@ pub struct TunTap {
     ipv4: Ipv4Addr,
 
     /// Opened file descriptor to the device
-    fd: File,
+    fd: Arc<Mutex<File>>,
 
     /// Index of the device
     idx: u32,
-
-    /// Poller instance to read/write device
-    poll: Poll,
-
-    /// Channel used to send packets received from this device
-    tx: Sender<Ipv4Packet>,
-
-    /// Channel used to receive packets to send out this device
-    rx: Option<Receiver<Ipv4Packet>>,
-
-    /// Mac Address of the device
-    mac: MacAddress,
 }
 
 pub struct TunTapHandle {
@@ -119,41 +108,20 @@ impl TunTap {
         };
 
         let idx = if_nametoindex(&name.as_bytes()[..len])?;
-
-        let poll = Poll::new()?;
-        let (tx, rx) = flume::unbounded();
-
+        let fd = Arc::new(Mutex::new(fd));
+        /*
         let mac = match flags {
             IFF_TAP => MacAddress::from_interface(&name)?,
             _ => MacAddress::generate(),
         };
+        */
 
         Ok(Self {
             name,
             ipv4,
             fd,
             idx,
-            poll,
-            tx,
-            rx: Some(rx),
-            mac,
         })
-    }
-
-    fn read_from_device(&mut self) -> io::Result<()> {
-        let mut buf = [0u8; 1024];
-        let sz = self.fd.read(&mut buf)?;
-        tracing::trace!("[tap] read {sz} bytes");
-        Ok(())
-    }
-
-    fn write_to_device(&mut self, pkt: Ipv4Packet) -> io::Result<()> {
-        let iovs = [IoSlice::new(pkt.as_bytes())];
-        let sz = self.fd.write_vectored(&iovs)?;
-
-        tracing::trace!("[tap] wrote {sz} bytes");
-
-        Ok(())
     }
 }
 
@@ -164,69 +132,98 @@ impl Debug for TunTap {
 }
 
 impl Wan for TunTap {
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
-    fn ty(&self) -> &str {
-        "Tap"
-    }
-
     fn ipv4(&self) -> Option<Ipv4Addr> {
         Some(self.ipv4)
     }
 
-    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
-        let waker = Waker::new(self.poll.registry(), TOKEN_WRITE)?;
-        self.poll.registry().register(
-            &mut SourceFd(&self.fd.as_raw_fd()),
-            TOKEN_READ,
-            Interest::READABLE,
-        )?;
+    fn spawn(
+        &self,
+        router: RouterTx,
+        _stats: WanStats,
+    ) -> Result<super::WanThreadHandle, NetworkError> {
+        let poll = Poll::new()?;
+        let waker = Waker::new(poll.registry(), TOKEN_WRITE)?;
 
+        let (tx, rx) = flume::unbounded();
         let handle = TunTapHandle {
-            tx: self.tx.clone(),
+            tx,
             waker: Arc::new(waker),
         };
 
-        Ok(Box::new(handle))
+        let thread = std::thread::Builder::new()
+            .name(String::from("wan-tap"))
+            .spawn({
+                let device = Arc::clone(&self.fd);
+                move || {
+                    if let Err(error) = run(device, poll, router, rx, _stats) {
+                        tracing::error!(%error, "tuntap thread crashed");
+                    }
+                }
+            })?;
+
+        Ok(WanThreadHandle::new(thread, handle))
     }
+}
 
-    fn run(mut self: Box<Self>, _router: RouterTx, _stats: WanStats) -> Result<(), NetworkError> {
-        let mut events = Events::with_capacity(MAX_EVENTS_CAPACITY);
+fn run(
+    device: Arc<Mutex<File>>,
+    mut poll: Poll,
+    _router: RouterTx,
+    rx: Receiver<Ipv4Packet>,
+    _stats: WanStats,
+) -> Result<(), NetworkError> {
+    let mut events = Events::with_capacity(MAX_EVENTS_CAPACITY);
+    let mut device = device.lock();
 
-        let rx = self.rx.take().unwrap();
-        //.ok_or_else(|| Error::General(String::from("no receiver available, already used")))?;
+    poll.registry().register(
+        &mut SourceFd(&device.as_raw_fd()),
+        TOKEN_READ,
+        Interest::READABLE,
+    )?;
 
-        loop {
-            self.poll.poll(&mut events, None)?;
+    loop {
+        poll.poll(&mut events, None)?;
 
-            for event in &events {
-                match event.token() {
-                    TOKEN_READ => match self.read_from_device() {
-                        Ok(_) => (),
-                        Err(error) => {
-                            tracing::warn!(?error, "[upstream] unable to read from tun device")
-                        }
-                    },
-                    TOKEN_WRITE => {
-                        for pkt in rx.drain() {
-                            match self.write_to_device(pkt) {
-                                Ok(()) => {
-                                    tracing::trace!("[upstream] wrote ipv4 packet to tun device")
-                                }
-                                Err(error) => tracing::error!(
-                                    ?error,
-                                    "[upstream] unable to write to tun device"
-                                ),
+        for event in &events {
+            match event.token() {
+                TOKEN_READ => match read_from_device(&mut *device) {
+                    Ok(_) => (),
+                    Err(error) => {
+                        tracing::warn!(?error, "[upstream] unable to read from tun device")
+                    }
+                },
+                TOKEN_WRITE => {
+                    for pkt in rx.drain() {
+                        match write_to_device(&mut *device, pkt) {
+                            Ok(()) => {
+                                tracing::trace!("[upstream] wrote ipv4 packet to tun device")
+                            }
+                            Err(error) => {
+                                tracing::error!(?error, "[upstream] unable to write to tun device")
                             }
                         }
                     }
-                    Token(token) => tracing::trace!(token, "[tap] unknown mio token"),
                 }
+                Token(token) => tracing::trace!(token, "[tap] unknown mio token"),
             }
         }
     }
+}
+
+fn read_from_device<R: Read>(rdr: &mut R) -> io::Result<()> {
+    let mut buf = [0u8; 1024];
+    let sz = rdr.read(&mut buf)?;
+    tracing::trace!("[tap] read {sz} bytes");
+    Ok(())
+}
+
+fn write_to_device<W: Write>(wr: &mut W, pkt: Ipv4Packet) -> io::Result<()> {
+    let iovs = [IoSlice::new(pkt.as_bytes())];
+    let sz = wr.write_vectored(&iovs)?;
+
+    tracing::trace!("[tap] wrote {sz} bytes");
+
+    Ok(())
 }
 
 impl WanTx for TunTapHandle {

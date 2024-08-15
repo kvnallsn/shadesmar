@@ -9,13 +9,11 @@ use std::{
 use nix::sys::socket::{sendmsg, MsgFlags, SockaddrIn, SockaddrIn6};
 use shadesmar_net::Ipv4Packet;
 
-use crate::net::{router::RouterTx, NetworkError};
+use crate::net::{router::RouterTx, wan::WanThreadHandle, NetworkError};
 
 use super::{Wan, WanStats, WanTx};
 
 pub struct UdpDevice {
-    name: String,
-    sock: UdpSocket,
     dests: Vec<SocketAddr>,
 }
 
@@ -25,11 +23,9 @@ pub struct UdpDeviceHandle {
 }
 
 impl UdpDevice {
-    pub fn connect<S: Into<String>, A: ToSocketAddrs>(name: S, addrs: A) -> io::Result<Self> {
-        let name = name.into();
-        let sock = UdpSocket::bind("0.0.0.0:0")?;
+    pub fn connect<S: Into<String>, A: ToSocketAddrs>(_name: S, addrs: A) -> io::Result<Self> {
         let dests = addrs.to_socket_addrs()?.collect::<Vec<_>>();
-        Ok(Self { name, sock, dests })
+        Ok(Self { dests })
     }
 }
 
@@ -37,42 +33,48 @@ impl Wan for UdpDevice
 where
     Self: Sized,
 {
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
-    fn ty(&self) -> &str {
-        "UDP"
-    }
-
     fn ipv4(&self) -> Option<Ipv4Addr> {
         None
     }
 
-    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
+    fn spawn(
+        &self,
+        router: RouterTx,
+        _stats: WanStats,
+    ) -> Result<super::WanThreadHandle, NetworkError> {
+        let sock = UdpSocket::bind("0.0.0.0:0")?;
+
         let handle = UdpDeviceHandle {
-            sock: self.sock.as_raw_fd(),
+            sock: sock.as_raw_fd(),
             dests: self.dests.clone(),
         };
 
-        Ok(Box::new(handle))
-    }
+        let thread = std::thread::Builder::new()
+            .name(format!("wan"))
+            .spawn(move || {
+                let mut buf = [0u8; 1600];
+                loop {
+                    let (sz, peer) = match sock.recv_from(&mut buf) {
+                        Ok(s) => s,
+                        Err(_) => break,
+                    };
 
-    fn run(self: Box<Self>, router: RouterTx, _stats: WanStats) -> Result<(), NetworkError> {
-        let mut buf = [0u8; 1600];
-        loop {
-            let (sz, peer) = self.sock.recv_from(&mut buf)?;
-            tracing::trace!(?peer, "read {sz} bytes from peer: {:02x?}", &buf[..20],);
-            let pkt = buf[0..sz].to_vec();
-            match pkt[0] >> 4 {
-                4 => {
-                    let pkt = Ipv4Packet::parse(pkt)?;
-                    router.route_ipv4(pkt)
+                    tracing::trace!(?peer, "read {sz} bytes from peer: {:02x?}", &buf[..20],);
+                    let pkt = buf[0..sz].to_vec();
+                    match pkt[0] >> 4 {
+                        4 => match Ipv4Packet::parse(pkt) {
+                            Ok(pkt) => router.route_ipv4(pkt),
+                            Err(_) => (),
+                        },
+                        6 => router.route_ipv6(pkt),
+                        version => tracing::warn!(version, "unknown ip version / malformed packet"),
+                    }
                 }
-                6 => router.route_ipv6(pkt),
-                version => tracing::warn!(version, "unknown ip version / malformed packet"),
-            }
-        }
+            })?;
+
+        let handle = WanThreadHandle::new(thread, handle);
+
+        Ok(handle)
     }
 }
 

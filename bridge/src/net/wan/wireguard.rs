@@ -28,7 +28,7 @@ use shadesmar_net::{Ipv4Header, Ipv4Packet};
 
 use crate::net::{router::RouterTx, NetworkError};
 
-use super::{Wan, WanStats, WanTx};
+use super::{Wan, WanStats, WanThreadHandle, WanTx};
 
 const TOKEN_WAKER: Token = Token(0);
 const TOKEN_UDP: Token = Token(1);
@@ -38,29 +38,20 @@ const TOKEN_SFD: Token = Token(3);
 const WG_BUF_SZ: usize = 1600;
 
 pub struct WgDevice {
+    /// Private / Secret Key for WireGuard tunnel
+    key: StaticSecret,
+
+    /// Public key of WireGuard peer endpoint
+    peer: PublicKey,
+
     /// Human-friendly name of this wan device
     name: String,
-
-    /// WireGuard tunnel (encryptor/decryptor)
-    tun: Tunn,
 
     /// Endpoint of peer (ipv4/6 and port combo)
     endpoint: SocketAddr,
 
     /// Ipv4 address of WireGuard device
     ipv4: Ipv4Addr,
-
-    /// Receiver for an Ipv4 packet to encrypt / route
-    rx: Option<Receiver<Ipv4Packet>>,
-
-    /// Handle used to communicate with this device
-    handle: WgHandle,
-
-    /// Poller to watch for events
-    poll: Poll,
-
-    /// Cache used to store/rebuild fragmented packets
-    cache: HashMap<u16, Ipv4Packet>,
 }
 
 /// A handle/reference for the controller thread to communicate
@@ -71,7 +62,7 @@ pub struct WgHandle {
     waker: Arc<Waker>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct WgConfig {
     pub key: String,
     pub peer: String,
@@ -105,16 +96,79 @@ impl WgDevice {
         BASE64_STANDARD.decode_slice(&cfg.key, &mut key)?;
         BASE64_STANDARD.decode_slice(&cfg.peer, &mut peer)?;
 
+        let name = name.into();
         let key = StaticSecret::from(key);
         let peer = PublicKey::from(peer);
 
+        Ok(Self {
+            key,
+            peer,
+            name,
+            endpoint: cfg.endpoint,
+            ipv4: ipv4.into(),
+        })
+    }
+}
+
+impl Wan for WgDevice {
+    fn ipv4(&self) -> Option<Ipv4Addr> {
+        Some(self.ipv4)
+    }
+
+    fn spawn(&self, router: RouterTx, stats: WanStats) -> Result<WanThreadHandle, NetworkError> {
+        let tun = WgTunnel::new(self.key.clone(), self.peer, self.endpoint)?;
+        let handle = tun.handle();
+
+        let thread = std::thread::Builder::new()
+            .name(format!("wan-{}", self.name))
+            .spawn(move || {
+                if let Err(error) = tun.run(router, stats) {
+                    tracing::error!(%error, "wireguard wan crashed");
+                }
+            })?;
+
+        let handle = WanThreadHandle::new(thread, handle);
+
+        Ok(handle)
+    }
+}
+
+impl WanTx for WgHandle {
+    fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
+        self.tx.send(pkt)?;
+        self.waker.wake()?;
+        Ok(())
+    }
+}
+
+pub struct WgTunnel {
+    tun: Tunn,
+    endpoint: SocketAddr,
+    poll: Poll,
+    rx: Option<Receiver<Ipv4Packet>>,
+    handle: WgHandle,
+
+    /// Cache used to store/rebuild fragmented packets
+    cache: HashMap<u16, Ipv4Packet>,
+}
+
+impl WgTunnel {
+    /// Creates a new WireGuard tunnel
+    ///
+    /// ### Arguments
+    /// * `key` - Secret / private key for WireGuard tunnel
+    /// * `peer` - Public key of WireGuard endpoint
+    pub fn new(
+        key: StaticSecret,
+        peer: PublicKey,
+        endpoint: SocketAddr,
+    ) -> Result<Self, NetworkError> {
         let tun = Tunn::new(key, peer, None, None, 1, None)
             .map_err(|e| NetworkError::Generic(Cow::Borrowed(e)))?;
 
         let poll = Poll::new()?;
         let waker = Waker::new(poll.registry(), TOKEN_WAKER)?;
 
-        let name = name.into();
         let (tx, rx) = flume::unbounded();
         let handle = WgHandle {
             tx,
@@ -122,106 +176,25 @@ impl WgDevice {
         };
 
         Ok(Self {
-            name,
             tun,
-            endpoint: cfg.endpoint,
-            ipv4: ipv4.into(),
+            endpoint,
+            poll,
             rx: Some(rx),
             handle,
-            poll,
             cache: HashMap::new(),
         })
     }
 
-    /// Process the outcome of an encapsulate/decapsulate action
+    /// Returns the handle used to communicate with this tunnel
+    pub fn handle(&self) -> WgHandle {
+        self.handle.clone()
+    }
+
+    /// Runs the WireGuard tunnel
     ///
-    /// ### Arguments
-    /// * `action` - Outcome of encapsulate/decapsulate/update_timers
-    fn handle_tun_result(
-        &mut self,
-        action: TunnResult,
-        router: &RouterTx,
-        sock: &UdpSocket,
-        stats: &WanStats,
-    ) -> Result<bool, NetworkError> {
-        let mut to_network = false;
-
-        match action {
-            TunnResult::Err(error) => match error {
-                WireGuardError::ConnectionExpired => (),
-                error => tracing::error!(?error, "[wg] unable to handle action"),
-            },
-            TunnResult::Done => tracing::trace!("[wg] no action"),
-            TunnResult::WriteToNetwork(pkt) => {
-                tracing::trace!("[wg] write {} bytes to network", pkt.len());
-                stats.tx_add(pkt.len() as u64);
-                sock.send_to(pkt, self.endpoint)?;
-                to_network = true;
-            }
-            TunnResult::WriteToTunnelV4(pkt, ip) => {
-                stats.rx_add(pkt.len() as u64);
-                let hdr = Ipv4Header::extract_from_slice(&pkt)?;
-                tracing::trace!(src = ?ip, dst = ?hdr.dst, "[wg] write {} bytes to tunnel", pkt.len());
-                let pkt = Ipv4Packet::parse(pkt.to_vec())?;
-
-                // rebuild fragmented packets
-                let pkt = match (pkt.has_fragments(), pkt.fragment_offset()) {
-                    (false, 0) => Some(pkt),
-                    (true, 0) => {
-                        self.cache.insert(pkt.id(), pkt);
-                        None
-                    }
-                    (true, offset) => {
-                        self.cache
-                            .get_mut(&pkt.id())
-                            .map(|fpkt| fpkt.add_fragment_data(offset, pkt.payload()));
-                        None
-                    }
-                    (false, offset) => match self.cache.remove(&pkt.id()) {
-                        Some(mut fpkt) => {
-                            fpkt.add_fragment_data(offset, pkt.payload());
-                            fpkt.finalize();
-                            Some(fpkt)
-                        }
-                        None => {
-                            return Err(NetworkError::Generic("missing frag packet data".into()))?
-                        }
-                    },
-                };
-
-                if let Some(pkt) = pkt {
-                    router.route_ipv4(pkt);
-                }
-            }
-            TunnResult::WriteToTunnelV6(pkt, ip) => {
-                stats.rx_add(pkt.len() as u64);
-                tracing::trace!(?ip, "[wg] write {} bytes to tunnel", pkt.len());
-                router.route_ipv6(pkt.to_vec());
-            }
-        }
-
-        Ok(to_network)
-    }
-}
-
-impl Wan for WgDevice {
-    fn name(&self) -> &str {
-        self.name.as_str()
-    }
-
-    fn ty(&self) -> &str {
-        "WireGuard"
-    }
-
-    fn ipv4(&self) -> Option<Ipv4Addr> {
-        Some(self.ipv4)
-    }
-
-    fn tx(&self) -> Result<Box<dyn WanTx>, NetworkError> {
-        Ok(Box::new(self.handle.clone()))
-    }
-
-    fn run(mut self: Box<Self>, router: RouterTx, stats: WanStats) -> Result<(), NetworkError> {
+    /// Running the tunnel will listen for inbound traffic, decapsulate/decypt, and forward to
+    /// the router for processing.  
+    pub fn run(mut self, router: RouterTx, stats: WanStats) -> Result<(), NetworkError> {
         let sock = std::net::UdpSocket::bind("0.0.0.0:0")?;
         sock.set_nonblocking(true)?;
         let mut sock = UdpSocket::from_std(sock);
@@ -351,12 +324,74 @@ impl Wan for WgDevice {
 
         Ok(())
     }
-}
 
-impl WanTx for WgHandle {
-    fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
-        self.tx.send(pkt)?;
-        self.waker.wake()?;
-        Ok(())
+    /// Process the outcome of an encapsulate/decapsulate action
+    ///
+    /// ### Arguments
+    /// * `action` - Outcome of encapsulate/decapsulate/update_timers
+    fn handle_tun_result(
+        &mut self,
+        action: TunnResult,
+        router: &RouterTx,
+        sock: &UdpSocket,
+        stats: &WanStats,
+    ) -> Result<bool, NetworkError> {
+        let mut to_network = false;
+
+        match action {
+            TunnResult::Err(error) => match error {
+                WireGuardError::ConnectionExpired => (),
+                error => tracing::error!(?error, "[wg] unable to handle action"),
+            },
+            TunnResult::Done => tracing::trace!("[wg] no action"),
+            TunnResult::WriteToNetwork(pkt) => {
+                tracing::trace!("[wg] write {} bytes to network", pkt.len());
+                stats.tx_add(pkt.len() as u64);
+                sock.send_to(pkt, self.endpoint)?;
+                to_network = true;
+            }
+            TunnResult::WriteToTunnelV4(pkt, ip) => {
+                stats.rx_add(pkt.len() as u64);
+                let hdr = Ipv4Header::extract_from_slice(&pkt)?;
+                tracing::trace!(src = ?ip, dst = ?hdr.dst, "[wg] write {} bytes to tunnel", pkt.len());
+                let pkt = Ipv4Packet::parse(pkt.to_vec())?;
+
+                // rebuild fragmented packets
+                let pkt = match (pkt.has_fragments(), pkt.fragment_offset()) {
+                    (false, 0) => Some(pkt),
+                    (true, 0) => {
+                        self.cache.insert(pkt.id(), pkt);
+                        None
+                    }
+                    (true, offset) => {
+                        self.cache
+                            .get_mut(&pkt.id())
+                            .map(|fpkt| fpkt.add_fragment_data(offset, pkt.payload()));
+                        None
+                    }
+                    (false, offset) => match self.cache.remove(&pkt.id()) {
+                        Some(mut fpkt) => {
+                            fpkt.add_fragment_data(offset, pkt.payload());
+                            fpkt.finalize();
+                            Some(fpkt)
+                        }
+                        None => {
+                            return Err(NetworkError::Generic("missing frag packet data".into()))?
+                        }
+                    },
+                };
+
+                if let Some(pkt) = pkt {
+                    router.route_ipv4(pkt);
+                }
+            }
+            TunnResult::WriteToTunnelV6(pkt, ip) => {
+                stats.rx_add(pkt.len() as u64);
+                tracing::trace!(?ip, "[wg] write {} bytes to tunnel", pkt.len());
+                router.route_ipv6(pkt.to_vec());
+            }
+        }
+
+        Ok(to_network)
     }
 }
