@@ -5,7 +5,7 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     io::ErrorKind,
-    net::{Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     os::fd::{AsFd, AsRawFd},
     sync::Arc,
 };
@@ -24,7 +24,7 @@ use nix::sys::{
     timerfd::{ClockId, Expiration, TimerFd, TimerFlags, TimerSetTimeFlags},
 };
 use serde::{Deserialize, Serialize};
-use shadesmar_net::{Ipv4Header, Ipv4Packet};
+use shadesmar_net::{types::Ipv4Network, Ipv4Header, Ipv4Packet};
 
 use crate::net::{router::RouterTx, NetworkError};
 
@@ -50,8 +50,8 @@ pub struct WgDevice {
     /// Endpoint of peer (ipv4/6 and port combo)
     endpoint: SocketAddr,
 
-    /// Ipv4 address of WireGuard device
-    ipv4: Ipv4Addr,
+    /// IPv4 network / address assigned to the tunnel
+    ipv4: Ipv4Network,
 }
 
 /// A handle/reference for the controller thread to communicate
@@ -67,6 +67,7 @@ pub struct WgConfig {
     pub key: String,
     pub peer: String,
     pub endpoint: SocketAddr,
+    pub ipv4: Ipv4Network,
 }
 
 impl Debug for WgConfig {
@@ -84,11 +85,7 @@ impl WgDevice {
     ///
     /// ### Arguments
     /// * `cfg` - WireGuard configuration
-    pub fn create<A: Into<Ipv4Addr>, S: Into<String>>(
-        name: S,
-        ipv4: A,
-        cfg: &WgConfig,
-    ) -> Result<Self, NetworkError> {
+    pub fn create<S: Into<String>>(name: S, cfg: &WgConfig) -> Result<Self, NetworkError> {
         use base64::prelude::BASE64_STANDARD;
 
         let mut key = [0u8; 32];
@@ -105,16 +102,12 @@ impl WgDevice {
             peer,
             name,
             endpoint: cfg.endpoint,
-            ipv4: ipv4.into(),
+            ipv4: cfg.ipv4,
         })
     }
 }
 
 impl Wan for WgDevice {
-    fn ipv4(&self) -> Option<Ipv4Addr> {
-        Some(self.ipv4)
-    }
-
     fn spawn(&self, router: RouterTx, stats: WanStats) -> Result<WanThreadHandle, NetworkError> {
         let tun = WgTunnel::new(self.key.clone(), self.peer, self.endpoint)?;
         let handle = tun.handle();
@@ -130,6 +123,10 @@ impl Wan for WgDevice {
         let handle = WanThreadHandle::new(thread, handle);
 
         Ok(handle)
+    }
+
+    fn masquerade_ipv4(&self) -> Option<std::net::Ipv4Addr> {
+        Some(self.ipv4.ip())
     }
 }
 

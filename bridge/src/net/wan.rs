@@ -23,7 +23,7 @@ use crate::config::{WanConfig, WanDevice};
 
 pub use self::{
     pcap::PcapDevice,
-    tap::TunTap,
+    tap::{TapConfig, TunTap},
     udp::UdpDevice,
     wireguard::{WgConfig, WgDevice},
 };
@@ -37,9 +37,6 @@ pub struct WanHandle {
 
     /// Type of WAN device (i.e., WireGuard)
     ty: String,
-
-    /// IPv4 Address of the WAN device
-    ipv4: Option<Ipv4Addr>,
 
     /// WAN device settings / parameters
     device: Box<dyn Wan>,
@@ -81,13 +78,6 @@ pub trait Wan: Send + Sync
 where
     Self: 'static,
 {
-    /// Returns the IPv4 address assigned to this WAN device
-    ///
-    /// Note: in the case of VPNs (e.g., WireGuard) this is not the same
-    /// as the exit/public IPv4 but rather the internal IPv4 of the adapter
-    /// itself
-    fn ipv4(&self) -> Option<Ipv4Addr>;
-
     /// Convenience function to spawn a thread to run the WAN device
     ///
     /// Sets up the `WanHandle` that can be used to communicate with the WAN
@@ -96,6 +86,14 @@ where
     /// ### Arguments
     /// * `router` - Trasmit/send channel to queue packets for routing
     fn spawn(&self, router: RouterTx, stats: WanStats) -> Result<WanThreadHandle, NetworkError>;
+
+    /// Returns the IPv4 to use when masquerading packets through the NAT, or
+    /// None if masquearding is not supported
+    ///
+    /// The default implementation returns None, disabling masquerading
+    fn masquerade_ipv4(&self) -> Option<Ipv4Addr> {
+        None
+    }
 
     /// Converts a WAN device into a boxed WAN (aka type erasure)
     fn to_boxed(self) -> Box<dyn Wan>
@@ -175,14 +173,7 @@ impl WanHandle {
                 ("blackhole", wan.to_boxed())
             }
             WanDevice::Tap(opts) => {
-                let ipv4 = cfg
-                    .ipv4
-                    .ok_or_else(|| {
-                        NetworkError::Generic("tap wan device requires ipv4 to be set".into())
-                    })
-                    .map(|net| net.ip())?;
-
-                let wan = TunTap::create_tap(&opts.device, ipv4)?;
+                let wan = TunTap::create_tap(opts)?;
                 ("tap", wan.to_boxed())
             }
             WanDevice::Udp(opts) => {
@@ -190,14 +181,7 @@ impl WanHandle {
                 ("udp", wan.to_boxed())
             }
             WanDevice::Wireguard(opts) => {
-                let ipv4 = cfg
-                    .ipv4
-                    .ok_or_else(|| {
-                        NetworkError::Generic("wireguard wan device requires ipv4 to be set".into())
-                    })
-                    .map(|net| net.ip())?;
-
-                let wan = WgDevice::create(&cfg.name, ipv4, &opts)?;
+                let wan = WgDevice::create(&cfg.name, &opts)?;
                 ("wireguard", wan.to_boxed())
             }
         };
@@ -210,7 +194,6 @@ impl WanHandle {
             device,
             stats,
             thread: None,
-            ipv4: cfg.ipv4.map(|net| net.ip()),
         })
     }
 
@@ -226,7 +209,7 @@ impl WanHandle {
 
     /// Returns the IPv4 address of this WAN device
     pub fn ipv4(&self) -> Option<Ipv4Addr> {
-        self.ipv4
+        self.device.masquerade_ipv4()
     }
 
     /// Returns true if this WAN is running, false if it has stopped

@@ -7,7 +7,10 @@ use std::{collections::HashMap, fs::File, io, net::SocketAddr, path::Path};
 use serde::{Deserialize, Serialize};
 use shadesmar_net::types::Ipv4Network;
 
-use crate::{config::dhcp::DhcpConfig, net::wan::WgConfig};
+use crate::{
+    config::dhcp::DhcpConfig,
+    net::wan::{TapConfig, WgConfig},
+};
 
 /// Shadesmar network configuration
 ///
@@ -29,11 +32,6 @@ pub struct WanConfig {
     /// Human-friendly name for WAN connection
     pub name: String,
 
-    /// The IPv4 address to assign to this WAN device
-    ///
-    /// If set, the router will attempt to masquerade packets using this address
-    pub ipv4: Option<Ipv4Network>,
-
     /// WAN-device specific configuration
     pub device: WanDevice,
 }
@@ -53,11 +51,6 @@ pub enum WanDevice {
 
     /// Forwards all traffic over a wireguard socket
     Wireguard(WgConfig),
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct TapConfig {
-    pub device: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

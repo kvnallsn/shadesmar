@@ -5,7 +5,6 @@ use std::{
     fmt::Debug,
     fs::File,
     io::{self, IoSlice, Read, Write},
-    net::Ipv4Addr,
     os::fd::AsRawFd,
     sync::Arc,
 };
@@ -15,11 +14,12 @@ use crate::net::{router::RouterTx, NetworkError};
 use flume::{Receiver, Sender};
 use mio::{unix::SourceFd, Events, Interest, Poll, Token, Waker};
 use nix::{
-    libc::{IFF_NO_PI, IFF_TAP, IFF_TUN, IFNAMSIZ, SIOCGIFHWADDR},
+    libc::{IFF_NO_PI, IFF_TAP, IFNAMSIZ, SIOCGIFHWADDR},
     net::if_::if_nametoindex,
 };
 use parking_lot::Mutex;
-use shadesmar_net::Ipv4Packet;
+use serde::{Deserialize, Serialize};
+use shadesmar_net::{types::Ipv4Network, Ipv4Packet};
 
 use super::{Wan, WanStats, WanThreadHandle, WanTx};
 
@@ -30,18 +30,24 @@ const MAX_EVENTS_CAPACITY: usize = 10;
 const TOKEN_READ: Token = Token(0);
 const TOKEN_WRITE: Token = Token(1);
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TapConfig {
+    pub device: String,
+    pub ipv4: Ipv4Network,
+}
+
 pub struct TunTap {
     /// Name of the tun device
     name: String,
-
-    /// IPv4 address assigned to this TUN/TAP device
-    ipv4: Ipv4Addr,
 
     /// Opened file descriptor to the device
     fd: Arc<Mutex<File>>,
 
     /// Index of the device
     idx: u32,
+
+    /// IPv4 address / network (cidr) assigned to the device
+    ipv4: Ipv4Network,
 }
 
 pub struct TunTapHandle {
@@ -62,19 +68,11 @@ impl TunTap {
     /// Creates a new tap device
     ///
     /// Note: This requires administration privileges or CAP_NET_ADMIN
-    pub fn create_tap<S: Into<String>>(name: S, ipv4: Ipv4Addr) -> Result<Self, NetworkError> {
-        Self::create(name.into(), IFF_TAP, ipv4)
+    pub fn create_tap(cfg: TapConfig) -> Result<Self, NetworkError> {
+        Self::create(cfg.device, IFF_TAP, cfg.ipv4)
     }
 
-    /// Creates a new tun device
-    ///
-    /// Note: This requires administration privileges or CAP_NET_ADMIN
-    #[allow(dead_code)]
-    pub fn create_tun(name: String, ipv4: Ipv4Addr) -> Result<Self, NetworkError> {
-        Self::create(name, IFF_TUN, ipv4)
-    }
-
-    fn create(name: String, flags: i32, ipv4: Ipv4Addr) -> Result<Self, NetworkError> {
+    fn create(name: String, flags: i32, ipv4: Ipv4Network) -> Result<Self, NetworkError> {
         // #define TUNSETIFF _IOW('T', 202, int)
         nix::ioctl_write_int!(tunsetiff, b'T', 202);
 
@@ -118,9 +116,9 @@ impl TunTap {
 
         Ok(Self {
             name,
-            ipv4,
             fd,
             idx,
+            ipv4,
         })
     }
 }
@@ -132,10 +130,6 @@ impl Debug for TunTap {
 }
 
 impl Wan for TunTap {
-    fn ipv4(&self) -> Option<Ipv4Addr> {
-        Some(self.ipv4)
-    }
-
     fn spawn(
         &self,
         router: RouterTx,
@@ -162,6 +156,10 @@ impl Wan for TunTap {
             })?;
 
         Ok(WanThreadHandle::new(thread, handle))
+    }
+
+    fn masquerade_ipv4(&self) -> Option<std::net::Ipv4Addr> {
+        Some(self.ipv4.ip())
     }
 }
 
@@ -238,10 +236,17 @@ impl WanTx for TunTapHandle {
 mod tests {
     use std::net::Ipv4Addr;
 
-    use super::TunTap;
+    use shadesmar_net::types::Ipv4Network;
+
+    use super::{TapConfig, TunTap};
 
     #[test]
     fn open_tap() {
-        TunTap::create_tap("oathgate1", Ipv4Addr::new(10, 11, 12, 13)).expect("unable to open tap");
+        let cfg = TapConfig {
+            device: String::from("oathgate1"),
+            ipv4: Ipv4Network::new(Ipv4Addr::new(10, 11, 12, 13), 24),
+        };
+
+        TunTap::create_tap(cfg).expect("unable to open tap");
     }
 }

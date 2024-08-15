@@ -2,7 +2,7 @@
 
 use std::{
     io::{self, IoSlice},
-    net::{Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{SocketAddr, ToSocketAddrs, UdpSocket},
     os::fd::{AsRawFd, RawFd},
 };
 
@@ -33,10 +33,6 @@ impl Wan for UdpDevice
 where
     Self: Sized,
 {
-    fn ipv4(&self) -> Option<Ipv4Addr> {
-        None
-    }
-
     fn spawn(
         &self,
         router: RouterTx,
