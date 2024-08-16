@@ -19,7 +19,7 @@ use shadesmar_bridge::{
 };
 use shadesmar_net::types::Ipv4Network;
 
-use crate::Command;
+use crate::{Command, NetworkCommand, NetworkRouteCommand, NetworkWanCommand};
 
 const SHADESMAR_CFG_PATH: &str = "/etc/shadesmar";
 const SHADESMAR_RUN_PATH: &str = "/var/run/shadesmar";
@@ -149,23 +149,26 @@ impl App {
         match cmd {
             Command::Install { config, name } => self.install(config, name)?,
             Command::Uninstall { network, purge } => self.uninstall(network, purge)?,
-            Command::Start { network } => self.start(network)?,
-            Command::Status { network } => self.status(network)?,
-            Command::Netflow { network } => self.pcap(network)?,
-            Command::Stop { network, force } => self.stop(network, force)?,
-            Command::RouteAdd {
-                network,
-                route,
-                wan,
-            } => self.add_route(network, route, wan)?,
-            Command::RouteDelete { network, route } => self.del_route(network, route)?,
-            Command::WanStop {
-                network,
-                wan,
-                cleanup,
-            } => self.stop_wan(network, wan, cleanup)?,
-            Command::WanAdd { network, cfg, name } => self.add_wan(network, cfg, name)?,
-        };
+            Command::Net { name: network, cmd } => match cmd {
+                NetworkCommand::Start => self.start(network)?,
+                NetworkCommand::Stop { force } => self.stop(network, force)?,
+                NetworkCommand::Status => self.status(network)?,
+                NetworkCommand::Netflow => self.pcap(network)?,
+                NetworkCommand::Route { cmd } => match cmd {
+                    NetworkRouteCommand::Add { route, wan } => {
+                        self.add_route(network, route, wan)?
+                    }
+                    NetworkRouteCommand::Delete { route } => self.del_route(network, route)?,
+                },
+                NetworkCommand::Wan { cmd } => match cmd {
+                    NetworkWanCommand::Add { cfg, name } => self.add_wan(network, cfg, name)?,
+                    NetworkWanCommand::Delete { wan, cleanup } => {
+                        self.stop_wan(network, wan, cleanup)?
+                    }
+                },
+            },
+        }
+
         Ok(())
     }
 
@@ -419,7 +422,8 @@ impl App {
             tracing::debug!(pid, "stopping network");
             Bridge::stop(pid, false)?;
         } else {
-            network.stop()?;
+            let mut sock = network.ctrl_socket()?;
+            sock.request(CtrlRequest::Stop)?;
         }
 
         Ok(())
@@ -584,13 +588,6 @@ impl Network {
     /// Removes the pidfile
     pub fn clear_pid(&self) -> anyhow::Result<()> {
         std::fs::remove_file(self.pid_file())?;
-        Ok(())
-    }
-
-    /// Attempts to stop the network
-    pub fn stop(&self) -> anyhow::Result<()> {
-        let mut sock = self.ctrl_socket()?;
-        sock.send(CtrlRequest::Stop)?;
         Ok(())
     }
 }

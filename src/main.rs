@@ -44,26 +44,51 @@ pub enum Command {
         purge: bool,
     },
 
-    /// Starts an shadesmar network
-    Start {
-        /// Name of network to start
-        network: String,
+    /// Manage a shadesmar network
+    Net {
+        /// Name of network
+        name: String,
+
+        #[clap(subcommand)]
+        cmd: NetworkCommand,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NetworkCommand {
+    /// Starts an shadesmar network
+    Start,
 
     /// Prints the status of installed networks
-    Status { network: String },
+    Status,
 
     /// Prints packets crossing the switch to stdout
-    Netflow {
-        /// Name of network to pcap
-        network: String,
+    Netflow,
+
+    /// Stops a (daemonized) shadesmar network
+    Stop {
+        /// Force network to stop
+        #[clap(long)]
+        force: bool,
     },
 
-    /// Adds a new route to the routing table
-    RouteAdd {
-        /// Name of network for which to add route
-        network: String,
+    /// Manage a network's routing table
+    Route {
+        #[clap(subcommand)]
+        cmd: NetworkRouteCommand,
+    },
 
+    /// Manage a network's WAN devices
+    Wan {
+        #[clap(subcommand)]
+        cmd: NetworkWanCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NetworkRouteCommand {
+    /// Adds a new route to the routing table
+    Add {
         /// Destination network / subnet to add
         route: Ipv4Network,
 
@@ -72,32 +97,16 @@ pub enum Command {
     },
 
     /// Deletes a route from the routing table
-    RouteDelete {
-        /// Name of network for which to add route
-        network: String,
-
+    Delete {
         /// Destination network / subnet to add
         route: Ipv4Network,
     },
+}
 
-    /// Stops a running WAN device on a network
-    WanStop {
-        /// Name of network for which WAN device is assigned
-        network: String,
-
-        /// Name of wan device to stop
-        wan: String,
-
-        /// Removes all routes associated with this WAN device
-        #[clap(short = 'a', long = "cleanup")]
-        cleanup: bool,
-    },
-
+#[derive(Debug, Subcommand)]
+pub enum NetworkWanCommand {
     /// Adds a new WAN device to a network
-    WanAdd {
-        /// Name of network for which WAN device is assigned
-        network: String,
-
+    Add {
         /// Path to the WAN configuration file
         cfg: PathBuf,
 
@@ -106,14 +115,14 @@ pub enum Command {
         name: Option<String>,
     },
 
-    /// Stops a (daemonized) shadesmar network
-    Stop {
-        /// Name of network to start
-        network: String,
+    /// Stops a running WAN device on a network
+    Delete {
+        /// Name of wan device to stop
+        wan: String,
 
-        /// Force network to stop
-        #[clap(short, long)]
-        force: bool,
+        /// Removes all routes associated with this WAN device
+        #[clap(short = 'a', long = "cleanup")]
+        cleanup: bool,
     },
 }
 

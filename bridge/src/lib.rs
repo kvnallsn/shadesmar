@@ -345,7 +345,11 @@ impl Bridge {
         for msg in msgs {
             tracing::debug!(message = ?msg, "received control message");
             match msg {
-                CtrlRequest::Stop => return Ok(ControlAction::Stop),
+                CtrlRequest::Stop => {
+                    strm.send(CtrlResponse::ok())?;
+                    tracing::info!("got control stop message, terminating");
+                    return Ok(ControlAction::Stop);
+                }
                 CtrlRequest::ConnectTap(socket) => {
                     switch.register_tap(socket);
                     strm.send(CtrlResponse::ok())?;

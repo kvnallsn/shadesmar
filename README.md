@@ -48,6 +48,7 @@
       </ul>
     </li>
     <li><a href="#quickstart">Quickstart</a></li>
+    <li><a href="#configuration">Configuration</a></li>
     <li><a href="#usage">Usage</a></li>
     <li><a href="#contributing">Contributing</a></li>
     <li><a href="#license">License</a></li>
@@ -113,7 +114,7 @@ The following two commands will install a new network, start it, and wait for VM
 
 ```console
 $ shadesmar install -v orion.yml
-$ shadesmar start -v orion
+$ shadesmar net -v orion start
 ```
 
 ### Connect a Qemu Virtual Machine
@@ -134,6 +135,60 @@ qemu-system-x86_64 \
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
+## Configuration
+
+`shadesmar` is configured using a YAML file to specify the network's settings (such as router subnet and DHCP).
+
+The network supports an optional WAN configuration that will be used to forward all non-local traffic (aka traffic not destined for other devices in the subnet).  The following WAN providers exist or under development:
+| Type       | Config Key | Status            | Description                                           |
+| ---------- | ---------- | ----------------- | ------------------------------------------------------|
+| Blackhole  | blackhole  | functioning       | Logs (via PCAP) and drops all traffic                 |
+| WireGuard  | wireguard  | functioning       | Encrypts and forwards traffic to a WireGuard endpoint |
+| UDP        | udp        | functioning       | Forwards all traffic to the specified UDP endpoint    |
+| TAP Device | tap        | under development | Exposes traffic to host device/network                |
+
+Below is a sample configuration for a router serving the `10.67.213.0/24` subnet:  
+- Wan section explaination:
+  - Create a blackhole device that will drop all traffic it receives
+  - Create a WireGuard device with the specified parameters
+
+- Router section explaination:
+  - Set to IPv4 address + subnet of the router to `10.67.213.1/24`
+  - Enable DHCP server, with an address range of `10.67.213.100` - `10.67.213.200`
+  - Disable internal DNS server (_not implemented yet_)
+  - Configure the routing table
+    - Drop any traffic without an explicit route (i.e., the default route is a blackhole device)
+    - Route traffic to `1.1.1.1/32` over the "dns-route" wan device
+
+
+```yaml
+wan:
+  - name: blackhole
+    pcap: true
+    device:
+        type: blackhole
+  - name: dns-route
+    pcap: false
+    device:
+        type: wireguard
+        key: ---secret key goes here---
+        peer: ---peer public key here---
+        endpoint: ---endpoint socket address here---
+        ipv4: ---assigned ipv4 address for private key---
+
+router:
+    ipv4: 10.67.213.1/24
+    dhcp:
+     start: 10.67.213.100
+      end: 10.67.213.200
+    dns: false
+    table:
+        0.0.0.0/0: blackhole    # default route
+        1.1.1.1/32: dns-route
+```
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 <!-- USAGE EXAMPLES -->
 ## Usage
 
@@ -150,14 +205,14 @@ By default, the network name will be taken from the name of the configuration fi
 
 ### Start a Network
 ```sh
-shadesmar start <network> 
+shadesmar net <network> start
 ```
 
 After a network has been installed, it can be started. Starting a network runs in the foreground.  Daemonization has not been added/supported yet.
 
 ### Stop a Network
 ```sh
-shadesmar stop <network>
+shadesmar net <network> stop
 ```
 
 A network may be stopped in a few different ways:
@@ -166,9 +221,9 @@ A network may be stopped in a few different ways:
 
 It is recommended to ensure all connected virtual machines have been stopped/disconnected before stopping a network.  Stopping a network which still has conencted virtual machines is undefined behavior.
 
-### Checking Network Status
+### Check Network Status
 ```sh
-shadesmar status <network>
+shadesmar net <network> status
 ```
 
 The status command will print the status of the router, WAN interfaces, current routing table, and switch port status of a network.
@@ -205,55 +260,54 @@ Switch Status:
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Network Configuration
-
-`shadesmar` is configured using a YAML file to specify the network's settings (such as router subnet and DHCP).
-
-The network supports an optional WAN configuration that will be used to forward all non-local traffic (aka traffic not destined for other devices in the subnet).  The following WAN providers exist or under development:
-| Type       | Config Key | Status            | Description                                           |
-| ---------- | ---------- | ----------------- | ------------------------------------------------------|
-| Blackhole  | blackhole  | functioning       | Logs (via PCAP) and drops all traffic                 |
-| WireGuard  | wireguard  | functioning       | Encrypts and forwards traffic to a WireGuard endpoint |
-| UDP        | udp        | functioning       | Forwards all traffic to the specified UDP endpoint    |
-| TAP Device | tap        | under development | Exposes traffic to host device/network                |
-
-Below is a sample configuration for a router serving the `10.67.213.0/24` subnet:  
-- Wan section explaination:
-  - Create a blackhole device that will drop all traffic it receives
-  - Create a WireGuard device with the specified parameters
-
-- Router section explaination:
-  - Set to IPv4 address + subnet of the router to `10.67.213.1/24`
-  - Drop any traffic without an explicit route (i.e., the default route is a blackhole device)
-  - Route traffic to 1.1.1.1/32 over the "dns-route" wan connection
-
-
-```yaml
-wan:
-  - name: blackhole
-    pcap: true
-    device:
-        type: blackhole
-  - name: dns-route
-    pcap: false
-    device:
-        type: wireguard
-        key: ---secret key goes here---
-        peer: ---peer public key here---
-        endpoint: ---endpoint socket address here---
-        ipv4: ---assigned ipv4 address for private key---
-
-router:
-    ipv4: 10.67.213.1/24
-    dhcp:
-     start: 10.67.213.100
-      end: 10.67.213.200
-    dns: false
-    table:
-        0.0.0.0/0: blackhole    # default route
-        1.1.1.1/32: dns-route
+### Examine traffic
+```sh
+shadesmar net <network> netflow
 ```
 
+Prints traffic crossing the switch to stdout in a table format.
+
+Example output:
+```
+| ------------------------------ | ---------- | ----------- | ------------------------------------------------------------ |
+|           Date/Time            |  Protocol  |    Size     |                           Details                            |
+| ------------------------------ | ---------- | ----------- | ------------------------------------------------------------ |
+| 2024-08-16T19:40:09.247570137Z | ipv4/udp   |   328 bytes | 0.0.0.0:68 --> 255.255.255.255:67                            |
+| 2024-08-16T19:40:09.247919404Z | ipv4/udp   |   308 bytes | 255.255.255.255:67 --> 0.0.0.0:68                            |
+| 2024-08-16T19:40:09.248738349Z | ipv4/udp   |   328 bytes | 0.0.0.0:68 --> 255.255.255.255:67                            |
+| 2024-08-16T19:40:09.24904596Z  | ipv4/udp   |   308 bytes | 255.255.255.255:67 --> 0.0.0.0:68                            |
+| 2024-08-16T19:40:19.805040673Z | arp        |    28 bytes | who has 10.10.10.1? tell 10.10.10.100                        |
+| 2024-08-16T19:40:19.805266919Z | arp        |    28 bytes | 10.10.10.1 is at 52:54:00:07:f8:0a                           |
+| 2024-08-16T19:40:19.805783103Z | ipv4/icmp  |    84 bytes | [echo request] 10.10.10.100 --> 1.1.1.1                      |
+```
+
+### Add a route
+```sh
+shadesmar net <network> route add <cidr> <wan-device>
+```
+
+Adds a new route to the routing table, ensuring all future traffic will travese the stated wan device.  If the route already exists, it will be updated to use the newly-specified device.
+
+### Delete a route
+```sh
+shadesmar net <network> route delete <cidr>
+```
+
+Removes a route from the routing table. Any future traffic to this cidr will use the default route (i.e., `0.0.0.0/32`)
+
+### Add a WAN device
+```sh
+shadesmar net <network> wan add <path/to/wan/cfg.yml>
+```
+
+Adds a new WAN device that may be used to route traffic. The yaml file must contain all required parameters for the type of wan device being created.
+
+### Delete a WAN device
+```sh
+shadesmar net <network> wan delete <wan>
+```
+
+Stops and deletes a WAN device. If the WAN device has active routes in the routing table, all traffic will be dropped.  Alternatively, the `-a/--clean` option may be specified to remove all associated routes with the WAN device.  In this case, all traffic will fallback to the default route.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
