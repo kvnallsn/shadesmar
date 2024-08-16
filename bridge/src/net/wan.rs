@@ -42,6 +42,9 @@ pub struct WanHandle {
     /// Type of WAN device (i.e., WireGuard)
     ty: String,
 
+    /// Flag to check if pcap is enabled on this WAN
+    pcap: bool,
+
     /// WAN device settings / parameters
     device: Box<dyn Wan>,
 
@@ -93,7 +96,7 @@ where
     /// * `stats` - Structure to track WAN statistics (tx/rx/etc.)
     fn spawn(
         &self,
-        id: String,
+        id: Uuid,
         router: RouterTx,
         stats: WanStats,
     ) -> Result<WanThreadHandle, NetworkError>;
@@ -172,8 +175,6 @@ impl WanHandle {
     /// * `ty` - Type of WAN device
     /// * `wan` - WAN device settings
     pub fn new<P: AsRef<Path>>(cfg: WanConfig, data_dir: P) -> Result<Self, NetworkError> {
-        let id = Uuid::now_v7();
-
         let data_dir = data_dir.as_ref();
 
         let (ty, device) = match cfg.device {
@@ -202,9 +203,10 @@ impl WanHandle {
         let stats = WanStats::new();
 
         Ok(Self {
-            id,
+            id: cfg.id,
             name: cfg.name,
             ty: ty.into(),
+            pcap: cfg.pcap,
             device,
             stats,
             thread: None,
@@ -224,6 +226,11 @@ impl WanHandle {
     /// Returns the type of WAN attached to this WAN handle
     pub fn ty(&self) -> &str {
         self.ty.as_str()
+    }
+
+    /// Returns true if traffic is being captured on this WAN
+    pub fn pcap_enabled(&self) -> bool {
+        self.pcap
     }
 
     /// Returns the IPv4 address of this WAN device
@@ -278,9 +285,7 @@ impl WanHandle {
             tracing::debug!("wan already running: {}", self.name);
         }
 
-        let handle = self
-            .device
-            .spawn(self.name.clone(), router, self.stats.clone())?;
+        let handle = self.device.spawn(self.id, router, self.stats.clone())?;
 
         self.thread = Some(handle);
 

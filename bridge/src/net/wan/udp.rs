@@ -8,6 +8,7 @@ use std::{
 
 use nix::sys::socket::{sendmsg, MsgFlags, SockaddrIn, SockaddrIn6};
 use shadesmar_net::Ipv4Packet;
+use uuid::Uuid;
 
 use crate::net::{router::RouterTx, wan::WanThreadHandle, NetworkError};
 
@@ -35,7 +36,7 @@ where
 {
     fn spawn(
         &self,
-        id: String,
+        id: Uuid,
         router: RouterTx,
         _stats: WanStats,
     ) -> Result<super::WanThreadHandle, NetworkError> {

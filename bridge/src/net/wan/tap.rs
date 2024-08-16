@@ -20,6 +20,7 @@ use nix::{
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use shadesmar_net::{types::Ipv4Network, Ipv4Packet};
+use uuid::Uuid;
 
 use super::{Wan, WanStats, WanThreadHandle, WanTx};
 
@@ -132,7 +133,7 @@ impl Debug for TunTap {
 impl Wan for TunTap {
     fn spawn(
         &self,
-        _id: String,
+        _id: Uuid,
         router: RouterTx,
         _stats: WanStats,
     ) -> Result<super::WanThreadHandle, NetworkError> {

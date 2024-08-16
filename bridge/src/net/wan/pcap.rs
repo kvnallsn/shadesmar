@@ -8,6 +8,7 @@ use pcap_file::{
     DataLink, Endianness, TsResolution,
 };
 use shadesmar_net::Ipv4Packet;
+use uuid::Uuid;
 
 use crate::net::{router::RouterTx, wan::WanThreadHandle, NetworkError};
 
@@ -40,7 +41,7 @@ impl PcapDevice {
 impl Wan for PcapDevice {
     fn spawn(
         &self,
-        _id: String,
+        _id: Uuid,
         _router: RouterTx,
         _stats: WanStats,
     ) -> Result<super::WanThreadHandle, NetworkError> {

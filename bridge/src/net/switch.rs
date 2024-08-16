@@ -53,11 +53,10 @@ impl VirtioSwitch {
     /// Creates a new, empty switch with no ports connected
     ///
     /// ### Arguments
-    /// * `pcap` - Path to pcap file on disk, or None to disable pcap
-    pub fn new(pcap: Option<PathBuf>) -> Result<Self, NetworkError> {
-        let logger = PcapLogger::new(pcap)?;
+    /// * `logger` - Handle to Pcap logging thread
+    pub fn new(logger: Arc<PcapLogger>) -> Result<Self, NetworkError> {
         Ok(Self {
-            logger: Arc::new(logger),
+            logger,
             ports: Arc::new(RwLock::new(Vec::new())),
             cache: Arc::new(RwLock::new(HashMap::new())),
             pkt_stats: Arc::new(AtomicU64::new(0)),
@@ -159,7 +158,7 @@ impl Switch for VirtioSwitch {
             return Err(ProtocolError::NotEnoughData(pkt.len(), ETHERNET_HDR_SZ));
         }
 
-        self.logger.log_packet(&pkt);
+        self.logger.log_switch(&pkt);
 
         let frame = EthernetFrame::extract(&mut pkt)?;
 

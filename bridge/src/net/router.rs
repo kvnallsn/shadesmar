@@ -6,7 +6,7 @@ pub mod table;
 use std::{
     collections::{BTreeMap, HashMap},
     net::IpAddr,
-    path::Path,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -30,7 +30,7 @@ pub use crate::net::{
 
 use self::handler::ProtocolHandler;
 
-use super::NetworkError;
+use super::{pcap::PcapLogger, NetworkError};
 
 const IPV4_HDR_SZ: usize = 20;
 
@@ -41,7 +41,7 @@ pub enum RouterMsg {
     FromLan(EthernetPacket),
 
     /// Queues a packet received from the WAN port
-    FromWan4(String, Ipv4Packet),
+    FromWan4(Uuid, Ipv4Packet),
 }
 
 /// The action a router will take after processing a packet
@@ -104,6 +104,9 @@ pub struct Router {
 
     /// Network Address Translation table
     nat: NatTable,
+
+    /// Handle to the pcap logging thread
+    pcap: Arc<PcapLogger>,
 }
 
 /// A `RouteBuilder` provides convenience methods for building routers
@@ -118,6 +121,9 @@ pub struct RouterBuilder {
 
     /// WAN routing table, maps IPv4 cidrs to wan index
     table: HashMap<Ipv4Network, String>,
+
+    /// Path to location to store directory, default is current dir
+    data_dir: Option<PathBuf>,
 }
 
 /// Contains the status of the router, when requested by a control message
@@ -148,7 +154,7 @@ impl RouterTx {
     /// ### Arguments
     /// * `id` - Unique ID of WAN device routing packet
     /// * `pkt` - IPv4 packet to route
-    pub fn route_ipv4(&self, id: String, pkt: Ipv4Packet) {
+    pub fn route_ipv4(&self, id: Uuid, pkt: Ipv4Packet) {
         self.0.send(RouterMsg::FromWan4(id, pkt)).ok();
     }
 
@@ -163,6 +169,16 @@ impl RouterTx {
 
 #[allow(dead_code)]
 impl RouterBuilder {
+    /// Sets the directory to store bridge/network/router related files
+    ///
+    /// If not set, the default is the current directory
+    ///
+    /// ### Arguments
+    /// * `data_dir` - Path (on disk) to location to store generated files
+    pub fn data_dir<P: Into<PathBuf>>(mut self, data_dir: P) -> Self {
+        self.data_dir = Some(data_dir.into());
+        self
+    }
     /// Registers a series of WAN configurations with this router
     ///
     /// The WAN device will handle all unknown/non-local packets process
@@ -206,17 +222,27 @@ impl RouterBuilder {
     ///
     /// ### Arguments
     /// * `network` - Network address and subnet mask
+    /// * `switch` - L2 switch this router to which this router is connected
+    /// * `pcap` - Handle to Pcap logging thread
     pub fn spawn(
         self,
         network: Ipv4Network,
         switch: VirtioSwitch,
-        data_dir: &Path,
+        pcap: Arc<PcapLogger>,
     ) -> Result<RouterHandle, NetworkError> {
         let (tx, rx) = RouterTx::new();
 
+        let data_dir = self
+            .data_dir
+            .unwrap_or_else(|| std::env::current_dir().unwrap());
+
         let mut wans = HashMap::new();
         for wan in self.wans {
-            let mut wan = WanHandle::new(wan, data_dir)?;
+            let mut wan = WanHandle::new(wan, &data_dir)?;
+            if wan.pcap_enabled() {
+                pcap.capture_wan(wan.id());
+            }
+
             wan.start(tx.clone())?;
             wans.insert(wan.id(), wan);
         }
@@ -245,6 +271,7 @@ impl RouterBuilder {
             network,
             ip4_handlers: self.ip4_handlers,
             nat,
+            pcap,
         };
 
         for (net, wan) in self.table {
@@ -282,11 +309,13 @@ impl Router {
                     Ok(_) => (),
                     Err(error) => tracing::warn!(?error, "unable to route lan packet"),
                 },
-                Ok(RouterMsg::FromWan4(_id, mut pkt)) => {
+                Ok(RouterMsg::FromWan4(id, mut pkt)) => {
                     if let Some(orig) = self.nat.get(&pkt) {
                         tracing::trace!("[router] unmasq packet: {} --> {}", pkt.dest(), orig);
                         pkt.unmasquerade(orig);
                     }
+
+                    self.pcap.log_wan(id, pkt.as_bytes());
 
                     if let Err(error) = self
                         .route_ip4(pkt)
@@ -410,6 +439,8 @@ impl Router {
         tracing::trace!("routing packet to {} over wan:{wan}", pkt.dest());
 
         if let Some(ref wan) = self.wans.read().get(&wan) {
+            self.pcap.log_wan(wan.id(), pkt.as_bytes());
+
             if let Some(ip) = wan.ipv4() {
                 tracing::trace!("[router] masquerading packet: {} --> {}", pkt.src(), ip);
                 self.nat.insert(&pkt);

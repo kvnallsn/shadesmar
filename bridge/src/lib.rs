@@ -3,11 +3,12 @@ pub mod ctrl;
 mod error;
 pub mod net;
 
-use std::{collections::HashMap, fmt::Display, os::fd::AsRawFd, path::PathBuf};
+use std::{collections::HashMap, fmt::Display, os::fd::AsRawFd, path::PathBuf, sync::Arc};
 
 use ctrl::CtrlResponse;
 use mio::{unix::SourceFd, Events, Interest, Poll, Token};
 use net::{
+    pcap::PcapLogger,
     router::{RouterHandle, RouterStatus},
     switch::SwitchStatus,
 };
@@ -47,9 +48,6 @@ pub enum ControlAction {
 
 #[derive(Default)]
 pub struct BridgeBuilder {
-    /// Path to pcap file, or None to disable pcap
-    pcap: Option<PathBuf>,
-
     /// Path to base directory for bridge-related files
     run_dir: Option<PathBuf>,
 
@@ -61,7 +59,6 @@ pub struct Bridge {
     name: String,
     vhost_socket_path: PathBuf,
     ctrl_socket_path: PathBuf,
-    pcap: Option<PathBuf>,
     cfg: BridgeConfig,
     data_dir: PathBuf,
 }
@@ -76,15 +73,6 @@ pub struct BridgeStatus {
 }
 
 impl BridgeBuilder {
-    /// Configures bridge to log all traffic transiting the switch
-    ///
-    /// ### Arguments
-    /// * `pcap` - Path to location to save pcap file, or None to disable
-    pub fn pcap(mut self, pcap: Option<PathBuf>) -> Self {
-        self.pcap = pcap;
-        self
-    }
-
     /// Sets the runtime directory to store ephemeral files (i.e., sockets) generated
     /// by this network/bridge
     ///
@@ -139,7 +127,6 @@ impl BridgeBuilder {
             name: name.into(),
             vhost_socket_path,
             ctrl_socket_path,
-            pcap: self.pcap,
             cfg,
             data_dir,
         })
@@ -212,7 +199,7 @@ impl Bridge {
     ///
     /// ### Arguments
     /// * `sfd` - Signal File Descriptor
-    pub fn run(mut self, sfd: SignalFd) -> Result<(), Error> {
+    pub fn run(self, sfd: SignalFd) -> Result<(), Error> {
         const TOKEN_VHOST: Token = Token(0);
         const TOKEN_SIGNAL: Token = Token(1);
         const TOKEN_CTRL: Token = Token(2);
@@ -222,7 +209,8 @@ impl Bridge {
         let mut vhost_socket = VHostSocket::new(&self.vhost_socket_path)?;
         let mut ctrl_socket = CtrlSocket::bind(&self.ctrl_socket_path)?;
 
-        let switch = VirtioSwitch::new(self.pcap.take())?;
+        let pcap_logger = PcapLogger::new(&self.cfg, &self.data_dir)?;
+        let switch = VirtioSwitch::new(Arc::clone(&pcap_logger))?;
 
         // spawn the default route / upstream
         //let wan = parse_wan(&self.cfg.wan)?;
@@ -233,11 +221,12 @@ impl Bridge {
 
         // spawn thread to receive messages/packets
         let router = Router::builder()
+            .data_dir(&self.data_dir)
             .register_wans(&self.cfg.wan)
             .routing_table(&self.cfg.router.table)
             .register_l4_proto_handler(IcmpHandler::default())
             .register_l4_proto_handler(udp_handler)
-            .spawn(self.cfg.router.ipv4, switch.clone(), &self.data_dir)?;
+            .spawn(self.cfg.router.ipv4, switch.clone(), pcap_logger)?;
 
         let mut poller = Poll::new()?;
         poller

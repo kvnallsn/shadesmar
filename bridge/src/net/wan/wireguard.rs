@@ -25,6 +25,7 @@ use nix::sys::{
 };
 use serde::{Deserialize, Serialize};
 use shadesmar_net::{types::Ipv4Network, Ipv4Header, Ipv4Packet};
+use uuid::Uuid;
 
 use crate::net::{router::RouterTx, NetworkError};
 
@@ -72,7 +73,7 @@ pub struct WgHandle {
 
 pub struct WgTunnel {
     /// Unique ID of the WAN device
-    wan_id: String,
+    wan_id: Uuid,
 
     /// Actual WireGuard tunnel
     tun: Tunn,
@@ -133,7 +134,7 @@ impl WgDevice {
 impl Wan for WgDevice {
     fn spawn(
         &self,
-        id: String,
+        id: Uuid,
         router: RouterTx,
         stats: WanStats,
     ) -> Result<WanThreadHandle, NetworkError> {
@@ -175,7 +176,7 @@ impl WgTunnel {
     /// * `peer` - Public key of WireGuard endpoint
     /// * `endpoint` - Socket address (IP:Port) of WireGuard endpoint
     pub fn new(
-        wan_id: String,
+        wan_id: Uuid,
         key: StaticSecret,
         peer: PublicKey,
         endpoint: SocketAddr,
