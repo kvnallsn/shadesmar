@@ -37,6 +37,14 @@ const TOKEN_SFD: Token = Token(3);
 
 const WG_BUF_SZ: usize = 1600;
 
+#[derive(Clone, Deserialize, Serialize)]
+pub struct WgConfig {
+    pub key: String,
+    pub peer: String,
+    pub endpoint: SocketAddr,
+    pub ipv4: Ipv4Network,
+}
+
 pub struct WgDevice {
     /// Private / Secret Key for WireGuard tunnel
     key: StaticSecret,
@@ -62,12 +70,27 @@ pub struct WgHandle {
     waker: Arc<Waker>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-pub struct WgConfig {
-    pub key: String,
-    pub peer: String,
-    pub endpoint: SocketAddr,
-    pub ipv4: Ipv4Network,
+pub struct WgTunnel {
+    /// Unique ID of the WAN device
+    wan_id: String,
+
+    /// Actual WireGuard tunnel
+    tun: Tunn,
+
+    /// (IP:Port) combo of distant end
+    endpoint: SocketAddr,
+
+    /// non-blocking i/o poller (mio)
+    poll: Poll,
+
+    /// Receiver channel for packets to transmit over WAN
+    rx: Option<Receiver<Ipv4Packet>>,
+
+    /// Handle to WireGuard device
+    handle: WgHandle,
+
+    /// Cache used to store/rebuild fragmented packets
+    cache: HashMap<u16, Ipv4Packet>,
 }
 
 impl Debug for WgConfig {
@@ -108,8 +131,13 @@ impl WgDevice {
 }
 
 impl Wan for WgDevice {
-    fn spawn(&self, router: RouterTx, stats: WanStats) -> Result<WanThreadHandle, NetworkError> {
-        let tun = WgTunnel::new(self.key.clone(), self.peer, self.endpoint)?;
+    fn spawn(
+        &self,
+        id: String,
+        router: RouterTx,
+        stats: WanStats,
+    ) -> Result<WanThreadHandle, NetworkError> {
+        let tun = WgTunnel::new(id, self.key.clone(), self.peer, self.endpoint)?;
         let handle = tun.handle();
 
         let thread = std::thread::Builder::new()
@@ -138,24 +166,16 @@ impl WanTx for WgHandle {
     }
 }
 
-pub struct WgTunnel {
-    tun: Tunn,
-    endpoint: SocketAddr,
-    poll: Poll,
-    rx: Option<Receiver<Ipv4Packet>>,
-    handle: WgHandle,
-
-    /// Cache used to store/rebuild fragmented packets
-    cache: HashMap<u16, Ipv4Packet>,
-}
-
 impl WgTunnel {
     /// Creates a new WireGuard tunnel
     ///
     /// ### Arguments
+    /// * `wan_id` - Unique ID of WAN device
     /// * `key` - Secret / private key for WireGuard tunnel
     /// * `peer` - Public key of WireGuard endpoint
+    /// * `endpoint` - Socket address (IP:Port) of WireGuard endpoint
     pub fn new(
+        wan_id: String,
         key: StaticSecret,
         peer: PublicKey,
         endpoint: SocketAddr,
@@ -173,6 +193,7 @@ impl WgTunnel {
         };
 
         Ok(Self {
+            wan_id,
             tun,
             endpoint,
             poll,
@@ -379,7 +400,7 @@ impl WgTunnel {
                 };
 
                 if let Some(pkt) = pkt {
-                    router.route_ipv4(pkt);
+                    router.route_ipv4(self.wan_id.clone(), pkt);
                 }
             }
             TunnResult::WriteToTunnelV6(pkt, ip) => {

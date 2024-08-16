@@ -18,6 +18,7 @@ use std::{
 
 use nix::sys::signal::Signal;
 use shadesmar_net::Ipv4Packet;
+use uuid::Uuid;
 
 use crate::config::{WanConfig, WanDevice};
 
@@ -32,6 +33,9 @@ use super::{router::RouterTx, NetworkError};
 
 /// A `WanHandle` provides a method to communicate with a WAN device
 pub struct WanHandle {
+    /// Unique id of WAN device
+    id: Uuid,
+
     /// Name of the WAN device
     name: String,
 
@@ -84,8 +88,15 @@ where
     /// (i.e., queue packets for transmission and track stats)
     ///
     /// ### Arguments
+    /// * `id` - Unique id used to identify WAN device
     /// * `router` - Trasmit/send channel to queue packets for routing
-    fn spawn(&self, router: RouterTx, stats: WanStats) -> Result<WanThreadHandle, NetworkError>;
+    /// * `stats` - Structure to track WAN statistics (tx/rx/etc.)
+    fn spawn(
+        &self,
+        id: String,
+        router: RouterTx,
+        stats: WanStats,
+    ) -> Result<WanThreadHandle, NetworkError>;
 
     /// Returns the IPv4 to use when masquerading packets through the NAT, or
     /// None if masquearding is not supported
@@ -161,6 +172,8 @@ impl WanHandle {
     /// * `ty` - Type of WAN device
     /// * `wan` - WAN device settings
     pub fn new<P: AsRef<Path>>(cfg: WanConfig, data_dir: P) -> Result<Self, NetworkError> {
+        let id = Uuid::now_v7();
+
         let data_dir = data_dir.as_ref();
 
         let (ty, device) = match cfg.device {
@@ -189,12 +202,18 @@ impl WanHandle {
         let stats = WanStats::new();
 
         Ok(Self {
+            id,
             name: cfg.name,
             ty: ty.into(),
             device,
             stats,
             thread: None,
         })
+    }
+
+    /// Returns the unique id of the WAN device
+    pub fn id(&self) -> Uuid {
+        self.id
     }
 
     /// Returns the name of the WAN device
@@ -254,13 +273,15 @@ impl WanHandle {
     /// ### Arguments
     /// * `router` - Transmit/send channel to router
     pub fn start(&mut self, router: RouterTx) -> Result<(), NetworkError> {
-        tracing::debug!("starting wan: {}", self.name);
+        tracing::debug!("starting wan: {} ({})", self.name, self.id);
         if self.is_running() {
             tracing::debug!("wan already running: {}", self.name);
-            return Ok(());
         }
 
-        let handle = self.device.spawn(router, self.stats.clone())?;
+        let handle = self
+            .device
+            .spawn(self.name.clone(), router, self.stats.clone())?;
+
         self.thread = Some(handle);
 
         Ok(())

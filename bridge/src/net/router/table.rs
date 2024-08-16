@@ -9,6 +9,7 @@ use std::{
 use ip_network_table_deps_treebitmap::IpLookupTable;
 use parking_lot::RwLock;
 use shadesmar_net::types::Ipv4Network;
+use uuid::Uuid;
 
 use crate::net::NetworkError;
 
@@ -23,13 +24,10 @@ pub type ArcRouteTable = Arc<RouteTable>;
 #[derive(Default)]
 pub struct RouteTable {
     /// Ipv4 routing table
-    table: RwLock<IpLookupTable<Ipv4Addr, usize>>,
+    table: RwLock<IpLookupTable<Ipv4Addr, (Uuid, String)>>,
 
     /// Stats for amount of data traversed over a route
     stats: RwLock<HashMap<Ipv4Network, u64>>,
-
-    /// Mapping of interface ids to names
-    names: RwLock<HashMap<usize, String>>,
 }
 
 impl RouteTable {
@@ -37,29 +35,13 @@ impl RouteTable {
     ///
     /// ### Arguments
     /// * `routes` - Table matching CIDRs to WAN interface ids
-    pub fn new(routes: HashMap<Ipv4Network, String>, wans: &[WanHandle]) -> ArcRouteTable {
-        let mut table = IpLookupTable::new();
+    pub fn new() -> ArcRouteTable {
+        let table = IpLookupTable::new();
         let stats = HashMap::new();
-        let mut names = HashMap::default();
-
-        for (ipnet, wan_name) in routes {
-            // get the index of wan
-            match wans.iter().position(|wan| wan.name() == &wan_name) {
-                Some(wan_idx) => {
-                    tracing::debug!("adding route to {ipnet} via {wan_name} (idx = {wan_idx})");
-                    table.insert(ipnet.ip(), u32::from(ipnet.subnet_mask_bits()), wan_idx);
-                    names.insert(wan_idx, wan_name);
-                }
-                None => {
-                    tracing::warn!("wan {wan_name} not found, skipping route");
-                }
-            }
-        }
 
         let table = Self {
             table: RwLock::new(table),
             stats: RwLock::new(stats),
-            names: RwLock::new(names),
         };
 
         Arc::new(table)
@@ -69,12 +51,12 @@ impl RouteTable {
     ///
     /// ### Arguments
     /// * `ip` - IPv4 address to route
-    pub fn get_route_wan_idx(&self, ip: Ipv4Addr) -> Result<usize, NetworkError> {
+    pub fn get_route_wan_idx(&self, ip: Ipv4Addr) -> Result<Uuid, NetworkError> {
         let (ip, mask, idx) = self
             .table
             .read()
             .longest_match(ip)
-            .map(|(ip, mask, idx)| (ip, mask, *idx))
+            .map(|(ip, mask, (idx, _name))| (ip, mask, *idx))
             .ok_or_else(|| NetworkError::RouteNotFound(Ipv4Network::new(ip, 32)))?;
 
         self.stats
@@ -93,11 +75,13 @@ impl RouteTable {
     /// ### Arguments
     /// * `ip` - Subnet/IPv4 address for which to route traffic
     /// * `wan` - Index of the WAN adapter that will handle the traffic
-    pub fn add_route(&self, ip: Ipv4Network, wan: usize) {
-        tracing::trace!("adding route: {ip} via {wan}");
-        self.table
-            .write()
-            .insert(ip.ip(), u32::from(ip.subnet_mask_bits()), wan);
+    pub fn add_route(&self, ip: Ipv4Network, wan: &WanHandle) {
+        tracing::trace!("adding route: {ip} via {}", wan.name());
+        self.table.write().insert(
+            ip.ip(),
+            u32::from(ip.subnet_mask_bits()),
+            (wan.id(), wan.name().to_owned()),
+        );
     }
 
     /// Removes a route from the routing table
@@ -120,12 +104,12 @@ impl RouteTable {
     ///
     /// ### Arguments
     /// * `idx` - Index value of WAN to remove
-    pub fn remove_routes_by_wan(&self, wan_idx: usize) -> Result<(), NetworkError> {
+    pub fn remove_routes_by_wan(&self, wan: &str) -> Result<(), NetworkError> {
         let mut table = self.table.write();
 
         let routes = table
             .iter()
-            .filter_map(|(ip, mask, idx)| match *idx == wan_idx {
+            .filter_map(|(ip, mask, (_idx, name))| match name == wan {
                 true => Some((ip, mask)),
                 false => None,
             })
@@ -143,17 +127,10 @@ impl RouteTable {
         self.table
             .read()
             .iter()
-            .map(|(ip, mask, idx)| {
+            .map(|(ip, mask, (_idx, name))| {
                 let net = Ipv4Network::new(ip, mask as u8);
-
-                let name = match self.names.read().get(idx) {
-                    Some(name) => name.clone(),
-                    None => String::from("unnamed"),
-                };
-
                 let num_packets = self.stats.read().get(&net).map(|count| *count).unwrap_or(0);
-
-                (net, (name, num_packets))
+                (net, (name.to_owned(), num_packets))
             })
             .collect()
     }

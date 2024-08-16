@@ -132,6 +132,7 @@ impl Debug for TunTap {
 impl Wan for TunTap {
     fn spawn(
         &self,
+        _id: String,
         router: RouterTx,
         _stats: WanStats,
     ) -> Result<super::WanThreadHandle, NetworkError> {

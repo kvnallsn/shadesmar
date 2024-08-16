@@ -40,6 +40,7 @@ impl PcapDevice {
 impl Wan for PcapDevice {
     fn spawn(
         &self,
+        _id: String,
         _router: RouterTx,
         _stats: WanStats,
     ) -> Result<super::WanThreadHandle, NetworkError> {

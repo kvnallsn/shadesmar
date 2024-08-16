@@ -20,6 +20,7 @@ use shadesmar_net::{
     EthernetFrame, EthernetPacket, Ipv4Packet, ProtocolError, Switch, SwitchPort,
 };
 use table::{ArcRouteTable, RouteTable};
+use uuid::Uuid;
 
 use crate::config::WanConfig;
 pub use crate::net::{
@@ -40,7 +41,7 @@ pub enum RouterMsg {
     FromLan(EthernetPacket),
 
     /// Queues a packet received from the WAN port
-    FromWan4(Ipv4Packet),
+    FromWan4(String, Ipv4Packet),
 }
 
 /// The action a router will take after processing a packet
@@ -72,7 +73,7 @@ pub struct RouterHandle {
     route_table: ArcRouteTable,
 
     /// Currently active WAN connections for the router
-    wans: Arc<RwLock<Vec<WanHandle>>>,
+    wans: Arc<RwLock<HashMap<Uuid, WanHandle>>>,
 }
 
 /// A Layer 3 IPv4 Router
@@ -87,7 +88,7 @@ pub struct Router {
     port: usize,
 
     /// Currently active WAN connections for the router
-    wans: Arc<RwLock<Vec<WanHandle>>>,
+    wans: Arc<RwLock<HashMap<Uuid, WanHandle>>>,
 
     /// WAN routing table, maps IPv4 cidrs to wan index
     table: ArcRouteTable,
@@ -145,9 +146,10 @@ impl RouterTx {
     /// Queues an IPv4 packet to be routed
     ///
     /// ### Arguments
+    /// * `id` - Unique ID of WAN device routing packet
     /// * `pkt` - IPv4 packet to route
-    pub fn route_ipv4(&self, pkt: Ipv4Packet) {
-        self.0.send(RouterMsg::FromWan4(pkt)).ok();
+    pub fn route_ipv4(&self, id: String, pkt: Ipv4Packet) {
+        self.0.send(RouterMsg::FromWan4(id, pkt)).ok();
     }
 
     /// Queues an IPv6 packet to be routed
@@ -212,27 +214,23 @@ impl RouterBuilder {
     ) -> Result<RouterHandle, NetworkError> {
         let (tx, rx) = RouterTx::new();
 
-        let mut wans = Vec::with_capacity(self.wans.len());
+        let mut wans = HashMap::new();
         for wan in self.wans {
             let mut wan = WanHandle::new(wan, data_dir)?;
             wan.start(tx.clone())?;
-
-            wans.push(wan);
+            wans.insert(wan.id(), wan);
         }
 
-        let table = RouteTable::new(self.table, &wans);
-        let route_table = Arc::clone(&table);
+        let table = RouteTable::new();
 
         let port = switch.connect(tx.clone());
-
         let wans = Arc::new(RwLock::new(wans));
-
         let mac = MacAddress::generate();
         let nat = NatTable::new();
 
         let handle = RouterHandle {
             mac,
-            route_table,
+            route_table: Arc::clone(&table),
             network,
             wans: Arc::clone(&wans),
         };
@@ -248,6 +246,13 @@ impl RouterBuilder {
             ip4_handlers: self.ip4_handlers,
             nat,
         };
+
+        for (net, wan) in self.table {
+            match handle.add_route(net, &wan) {
+                Ok(_) => tracing::debug!("added route to {net} over {wan}"),
+                Err(error) => tracing::warn!(%error, "unable to add route to {net} over {wan}"),
+            }
+        }
 
         std::thread::Builder::new()
             .name(String::from("router"))
@@ -277,7 +282,7 @@ impl Router {
                     Ok(_) => (),
                     Err(error) => tracing::warn!(?error, "unable to route lan packet"),
                 },
-                Ok(RouterMsg::FromWan4(mut pkt)) => {
+                Ok(RouterMsg::FromWan4(_id, mut pkt)) => {
                     if let Some(orig) = self.nat.get(&pkt) {
                         tracing::trace!("[router] unmasq packet: {} --> {}", pkt.dest(), orig);
                         pkt.unmasquerade(orig);
@@ -400,11 +405,11 @@ impl Router {
     /// ### Arguments
     /// * `pkt` - A layer 3 (IPv4) packet to write to the ether
     fn forward_packet(&mut self, mut pkt: Ipv4Packet) -> Result<(), NetworkError> {
-        let wan_idx = self.table.get_route_wan_idx(pkt.dest())?;
+        let wan = self.table.get_route_wan_idx(pkt.dest())?;
 
-        tracing::debug!("routing packet with dest {} over wan {wan_idx}", pkt.dest());
+        tracing::trace!("routing packet to {} over wan:{wan}", pkt.dest());
 
-        if let Some(ref wan) = self.wans.read().get(wan_idx) {
+        if let Some(ref wan) = self.wans.read().get(&wan) {
             if let Some(ip) = wan.ipv4() {
                 tracing::trace!("[router] masquerading packet: {} --> {}", pkt.src(), ip);
                 self.nat.insert(&pkt);
@@ -415,7 +420,7 @@ impl Router {
                 tracing::warn!(?error, "unable to write to wan, dropping packet");
             }
         } else {
-            tracing::warn!("[router] no wan device with index {wan_idx}, dropping packet");
+            tracing::warn!("[router] no wan device with name {wan}, dropping packet");
         }
 
         Ok(())
@@ -532,7 +537,7 @@ impl RouterHandle {
             .wans
             .read()
             .iter()
-            .map(|wan| {
+            .map(|(_, wan)| {
                 (
                     wan.name().to_owned(),
                     (
@@ -559,19 +564,15 @@ impl RouterHandle {
     /// * `dst` - Destintation network
     pub fn add_route<S: Into<String>>(&self, dst: Ipv4Network, wan: S) -> Result<(), NetworkError> {
         let wan_name = wan.into();
+        let wan_id = self.find_wan_id(&wan_name)?;
 
-        match self
-            .wans
-            .read()
-            .iter()
-            .position(|wan| wan.name() == &wan_name)
-        {
-            None => {
-                tracing::warn!("wan {wan_name} not found, not adding route");
-                return Err(NetworkError::WanDeviceNotFound(wan_name));
-            }
-            Some(idx) => self.route_table.add_route(dst, idx),
-        }
+        let wans = self.wans.read();
+
+        let wan = wans
+            .get(&wan_id)
+            .ok_or_else(|| NetworkError::WanDeviceNotFound(wan_name.clone()))?;
+
+        self.route_table.add_route(dst, wan);
 
         Ok(())
     }
@@ -596,21 +597,39 @@ impl RouterHandle {
     /// * `cleanup` - True to remove associated routes, false to leave them
     pub fn del_wan<S: AsRef<str>>(&self, name: S, cleanup: bool) -> Result<(), NetworkError> {
         let name = name.as_ref();
-        tracing::info!("stopping wan device {name}");
-        let wans = self.wans.read();
+        let id = self.find_wan_id(&name)?;
 
-        let wan_idx = wans
-            .iter()
-            .position(|wan| wan.name() == name)
+        tracing::info!("stopping wan device {name}");
+        let mut wans = self.wans.write();
+
+        let wan = wans
+            .remove(&id)
             .ok_or_else(|| NetworkError::WanDeviceNotFound(name.to_owned()))?;
 
-        wans[wan_idx].stop()?;
+        wan.stop()?;
 
         if cleanup {
-            self.route_table.remove_routes_by_wan(wan_idx)?;
+            self.route_table.remove_routes_by_wan(name)?;
         }
 
         Ok(())
+    }
+
+    /// Attempts to find the WAN id from the WAN name. If successful, returns the id
+    /// of the WAN device, otherwise returns an error
+    ///
+    /// ### Arguments
+    /// * `wan` - Name of WAN
+    fn find_wan_id<S: AsRef<str>>(&self, wan: S) -> Result<Uuid, NetworkError> {
+        let wan = wan.as_ref();
+        let wans = self.wans.read();
+
+        wans.values()
+            .find_map(|handle| match handle.name() == wan {
+                true => Some(handle.id()),
+                false => None,
+            })
+            .ok_or_else(|| NetworkError::WanDeviceNotFound(wan.to_owned()))
     }
 }
 

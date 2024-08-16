@@ -35,6 +35,7 @@ where
 {
     fn spawn(
         &self,
+        id: String,
         router: RouterTx,
         _stats: WanStats,
     ) -> Result<super::WanThreadHandle, NetworkError> {
@@ -59,7 +60,7 @@ where
                     let pkt = buf[0..sz].to_vec();
                     match pkt[0] >> 4 {
                         4 => match Ipv4Packet::parse(pkt) {
-                            Ok(pkt) => router.route_ipv4(pkt),
+                            Ok(pkt) => router.route_ipv4(id.clone(), pkt),
                             Err(_) => (),
                         },
                         6 => router.route_ipv6(pkt),
