@@ -44,7 +44,6 @@ clap = { workspace = true }
 console = { version = "0.15" }
 dialoguer = { version = "0.11" }
 jiff = { workspace = true }
-names = { version = "0.14.0", default-features = false }
 serde = { workspace = true }
 shadesmar-bridge = { path = "bridge" }
 shadesmar-net = { path = "net" }
