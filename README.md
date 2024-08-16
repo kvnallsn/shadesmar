@@ -111,11 +111,19 @@ If you plan to build from source, shadesmar is built using Rust. See the prerequ
 
 ### Setup
 
-Download `shadesmar` and move it into a directory in your `$PATH`
+Download `shadesmar` and move it into a directory in your `$PATH` and ensure all required directories exist and are writable by your current user
 ```console
 $ wget https://github.com/kvnallsn/shadesmar/releases/download/v0.0.1/shadesmar
 $ chmod +x shadesmar
 $ sudo mv shadesmar /usr/local/bin/shadesmar
+
+$ sudo mkdir -p /etc/shadesmar
+$ sudo mkdir -p /var/lib/shadesmar
+$ sudo mkdir -p /var/run/shadesmar
+
+$ sudo chown $USER /etc/shadesmar
+$ sudo chown $USER /var/lib/shadesmar
+$ sudo chown $USER /var/run/shadesmar
 ```
 
 Download the [orion.tgz](examples/orion.tgz) archive, extract it, and enter the `orion` directory in **three** separate terminals.
@@ -125,6 +133,9 @@ $ wget https://github.com/kvnallsn/shadesmar/raw/main/examples/orion.tgz
 $ tar zxf orion.tgz
 $ cd orion
 ```
+
+> [!IMPORTANT]
+> From this point, on all terminals should be in the `orion` directory.
 
 ### Terminal A: Install and Start the Network
 The following two commands will install a new network, start it, and wait for VMs to connect.
