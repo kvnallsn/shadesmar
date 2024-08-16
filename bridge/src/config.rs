@@ -50,7 +50,7 @@ pub struct WanConfig {
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum WanDevice {
     /// Pcap device (drops all packets)
-    Pcap,
+    Blackhole,
 
     /// A generic tap device
     Tap(TapConfig),

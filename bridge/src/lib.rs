@@ -221,7 +221,6 @@ impl Bridge {
 
         // spawn thread to receive messages/packets
         let router = Router::builder()
-            .data_dir(&self.data_dir)
             .register_wans(&self.cfg.wan)
             .routing_table(&self.cfg.router.table)
             .register_l4_proto_handler(IcmpHandler::default())

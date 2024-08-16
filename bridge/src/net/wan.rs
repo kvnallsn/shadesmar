@@ -1,6 +1,6 @@
 //! Various WAN providers
 
-mod pcap;
+mod blackhole;
 mod tap;
 mod udp;
 mod wireguard;
@@ -8,7 +8,6 @@ mod wireguard;
 use std::{
     net::Ipv4Addr,
     os::unix::thread::JoinHandleExt,
-    path::Path,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -23,7 +22,7 @@ use uuid::Uuid;
 use crate::config::{WanConfig, WanDevice};
 
 pub use self::{
-    pcap::PcapDevice,
+    blackhole::Blackhole,
     tap::{TapConfig, TunTap},
     udp::UdpDevice,
     wireguard::{WgConfig, WgDevice},
@@ -171,19 +170,12 @@ impl WanHandle {
     /// is used to forward packets to non-local destinations.
     ///
     /// ### Arguments
-    /// * `name` - Name of this WAN device
-    /// * `ty` - Type of WAN device
-    /// * `wan` - WAN device settings
-    pub fn new<P: AsRef<Path>>(cfg: WanConfig, data_dir: P) -> Result<Self, NetworkError> {
-        let data_dir = data_dir.as_ref();
-
+    /// * `cfg` - Wan Configuration
+    pub fn new(cfg: WanConfig) -> Result<Self, NetworkError> {
         let (ty, device) = match cfg.device {
-            WanDevice::Pcap => {
+            WanDevice::Blackhole => {
                 // generate a name for the pcap file
-                let ts = jiff::Timestamp::now().as_second();
-                let file = format!("capture_{}_{ts}", cfg.name);
-                let file = data_dir.join(file).with_extension("pcap");
-                let wan = PcapDevice::new(&file);
+                let wan = Blackhole::new();
                 ("blackhole", wan.to_boxed())
             }
             WanDevice::Tap(opts) => {

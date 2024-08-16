@@ -6,7 +6,6 @@ pub mod table;
 use std::{
     collections::{BTreeMap, HashMap},
     net::IpAddr,
-    path::PathBuf,
     sync::Arc,
 };
 
@@ -121,9 +120,6 @@ pub struct RouterBuilder {
 
     /// WAN routing table, maps IPv4 cidrs to wan index
     table: HashMap<Ipv4Network, String>,
-
-    /// Path to location to store directory, default is current dir
-    data_dir: Option<PathBuf>,
 }
 
 /// Contains the status of the router, when requested by a control message
@@ -169,16 +165,6 @@ impl RouterTx {
 
 #[allow(dead_code)]
 impl RouterBuilder {
-    /// Sets the directory to store bridge/network/router related files
-    ///
-    /// If not set, the default is the current directory
-    ///
-    /// ### Arguments
-    /// * `data_dir` - Path (on disk) to location to store generated files
-    pub fn data_dir<P: Into<PathBuf>>(mut self, data_dir: P) -> Self {
-        self.data_dir = Some(data_dir.into());
-        self
-    }
     /// Registers a series of WAN configurations with this router
     ///
     /// The WAN device will handle all unknown/non-local packets process
@@ -232,13 +218,9 @@ impl RouterBuilder {
     ) -> Result<RouterHandle, NetworkError> {
         let (tx, rx) = RouterTx::new();
 
-        let data_dir = self
-            .data_dir
-            .unwrap_or_else(|| std::env::current_dir().unwrap());
-
         let mut wans = HashMap::new();
         for wan in self.wans {
-            let mut wan = WanHandle::new(wan, &data_dir)?;
+            let mut wan = WanHandle::new(wan)?;
             if wan.pcap_enabled() {
                 pcap.capture_wan(wan.id());
             }
