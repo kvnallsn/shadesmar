@@ -111,6 +111,12 @@ If you plan to build from source, shadesmar is built using Rust. See the prerequ
 
 ### Setup
 
+Download `shadesmar` and move it into a directory in your `$PATH`
+```console
+$ wget https://github.com/kvnallsn/shadesmar/releases/download/v0.0.1/shadesmar
+$ sudo mv shadesmar /usr/local/bin/shadesmar
+```
+
 Download the [orion.tgz](examples/orion.tgz) archive, extract it, and enter the `orion` directory in **three** separate terminals.
 
 ```conolse
