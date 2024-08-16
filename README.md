@@ -107,17 +107,78 @@ If you plan to build from source, shadesmar is built using Rust. See the prerequ
 ## Quickstart
 
 > [!IMPORTANT]
-> This example assumes a network configuration file exist in the current directory and is named `orion.yml`
+> Ensure you have the qemu-system-x86 package installed on your system.  Otherwise the virtual machine will not run.  The shadesmar executable must also be in your path.
 
-### Install and Start the Network
+### Setup
+
+Download the [orion.tgz](examples/orion.tgz) archive, extract it, and enter the `orion` directory in **three** separate terminals.
+
+```conolse
+$ wget https://github.com/kvnallsn/shadesmar/raw/main/examples/orion.tgz
+$ tar zxf orion.tgz
+$ cd orion
+```
+
+### Terminal A: Install and Start the Network
 The following two commands will install a new network, start it, and wait for VMs to connect.
 
 ```console
-$ shadesmar install -v orion.yml
-$ shadesmar net -v orion start
+$ shadesmar install ./orion.yml
+$ shadesmar net orion start 
 ```
 
-### Connect a Qemu Virtual Machine
+### Terminal B: Connect a Qemu Virtual Machine
+
+The following script will start an Alpine Linux virtual machine with Qemu, connect to the shadesmar network backend, and spawn a TTY on stdin (ttyS0 / serial)
+
+```console
+$ ./run.sh
+```
+
+After the virtual machine has started, login with `root`. It should not prompt for a password, as one is not set.  You can now interact with the virtual machine as you would any other virtual machine.
+
+The example has a `blackhole` WAN adapter configured as the default (and only) route, any network traffic generated will be dropped. However, the `pcap` option is configured, so all network traffic the adapter receives will captured in a pcap file at `/var/lib/shadesmar/orion/pcap/wan-blackhole-<timestamp>.pcap`.
+
+### Terminal C: Explore Shadesmar Commands
+
+In the third terminal, you can explore the various commands shadesmar offers.
+
+#### Watch Packets on the Switch
+
+Using the netflow command, you can watch traffic cross the switch in real time.
+
+In Termainl C:
+```sh
+$ shadesmar net orion netflow
+```
+
+In Terminal B:
+
+Run any command that will generate network traffic, for example: `ping`
+```sh
+$ ping -c 4 1.1.1.1
+```
+
+You should see something similiar to following output in Terminal C:
+```console
+| ------------------------------ | ---------- | ----------- | ------------------------------------------------------------ |
+|           Date/Time            |  Protocol  |    Size     |                           Details                            |
+| ------------------------------ | ---------- | ----------- | ------------------------------------------------------------ |
+| 2024-08-16T22:55:06.078560507Z | arp        |    28 bytes | who has 10.67.213.1? tell 10.67.213.150                      |
+| 2024-08-16T22:55:06.078749065Z | arp        |    28 bytes | 10.67.213.1 is at 52:54:00:47:40:83                          |
+| 2024-08-16T22:55:06.079322153Z | ipv4/icmp  |    84 bytes | [echo request] 10.67.213.150 --> 1.1.1.1                     |
+| 2024-08-16T22:55:07.078603163Z | ipv4/icmp  |    84 bytes | [echo request] 10.67.213.150 --> 1.1.1.1                     |
+| 2024-08-16T22:55:08.078568152Z | ipv4/icmp  |    84 bytes | [echo request] 10.67.213.150 --> 1.1.1.1                     |
+| 2024-08-16T22:55:09.079032128Z | ipv4/icmp  |    84 bytes | [echo request] 10.67.213.150 --> 1.1.1.1                     |
+
+```
+
+> [!NOTE]
+> Remember, only the blackhole adapter is configured, so you should not see any echo replies~
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Qemu Configuration
 
 For a qemu virtual machine to use the network, the host must be able to access guest memory (memory-backend-memfd/numa) and a vhost-user chardev/netdev/device must be specified.
 
@@ -135,7 +196,7 @@ qemu-system-x86_64 \
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-## Configuration
+## Network Configuration
 
 `shadesmar` is configured using a YAML file to specify the network's settings (such as router subnet and DHCP).
 
