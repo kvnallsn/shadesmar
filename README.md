@@ -114,6 +114,7 @@ If you plan to build from source, shadesmar is built using Rust. See the prerequ
 Download `shadesmar` and move it into a directory in your `$PATH`
 ```console
 $ wget https://github.com/kvnallsn/shadesmar/releases/download/v0.0.1/shadesmar
+$ chmod +x shadesmar
 $ sudo mv shadesmar /usr/local/bin/shadesmar
 ```
 
