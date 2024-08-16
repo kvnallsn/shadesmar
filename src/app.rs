@@ -13,6 +13,7 @@ use console::Style;
 use dialoguer::{theme::Theme, Confirm};
 use pcap::handle_pcap;
 use shadesmar_bridge::{
+    config::{WanConfig, YamlConfig},
     ctrl::{CtrlClientStream, CtrlRequest},
     Bridge, BridgeStatus,
 };
@@ -163,6 +164,7 @@ impl App {
                 wan,
                 cleanup,
             } => self.stop_wan(network, wan, cleanup)?,
+            Command::WanAdd { network, cfg, name } => self.add_wan(network, cfg, name)?,
         };
         Ok(())
     }
@@ -490,6 +492,26 @@ impl App {
 
         let mut sock = network.ctrl_socket()?;
         sock.request::<()>(CtrlRequest::RemoveWan(wan, cleanup))?;
+
+        Ok(())
+    }
+
+    /// Attempts to add a new wan connection to the network
+    ///
+    /// ### Arguments
+    /// * `network` - Network to assign WAN device
+    /// * `cfg` - Path to the WAN device's configuration
+    /// * `name` - Name of the WAN connection (if renaming)
+    fn add_wan(self, network: String, cfg: PathBuf, name: Option<String>) -> anyhow::Result<()> {
+        let network = self.open_network(network)?;
+
+        let mut cfg = WanConfig::read_yaml_from_file(&cfg)?;
+        if let Some(name) = name {
+            cfg.name = name;
+        }
+
+        let mut sock = network.ctrl_socket()?;
+        sock.request::<()>(CtrlRequest::AddWan(cfg))?;
 
         Ok(())
     }

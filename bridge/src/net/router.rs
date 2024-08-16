@@ -73,6 +73,9 @@ pub struct RouterHandle {
 
     /// Currently active WAN connections for the router
     wans: Arc<RwLock<HashMap<Uuid, WanHandle>>>,
+
+    /// Trasmit side of router channel
+    tx: RouterTx,
 }
 
 /// A Layer 3 IPv4 Router
@@ -241,6 +244,7 @@ impl RouterBuilder {
             route_table: Arc::clone(&table),
             network,
             wans: Arc::clone(&wans),
+            tx,
         };
 
         let router = Router {
@@ -599,7 +603,19 @@ impl RouterHandle {
     }
 
     /// Adds a new WAN connection
-    pub fn add_wan(&self) -> Result<(), NetworkError> {
+    ///
+    /// ### Arguments
+    /// * `name` - Name of the wan connection
+    /// * `cfg` - WAN device configuration
+    pub fn add_wan(&self, cfg: WanConfig) -> Result<(), NetworkError> {
+        let mut wan = WanHandle::new(cfg)?;
+        if wan.pcap_enabled() {
+            //pcap.capture_wan(wan.id());
+        }
+
+        wan.start(self.tx.clone())?;
+        self.wans.write().insert(wan.id(), wan);
+
         Ok(())
     }
 

@@ -10,7 +10,7 @@ use mio::{event::Source, net::UnixListener, Token};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use shadesmar_net::types::Ipv4Network;
 
-use crate::error::Error;
+use crate::{config::WanConfig, error::Error};
 
 const TOKEN_CTRL_STREAM: usize = 0x0000_0001_0000_0000;
 const CTRL_MSG_HDR_SZ: usize = 5;
@@ -46,6 +46,9 @@ pub enum CtrlRequest {
 
     /// Removes a route from the routing table
     DelRoute(Ipv4Network),
+
+    /// Adds a new WAN device
+    AddWan(WanConfig),
 
     /// Removes a wan connection (by name)
     RemoveWan(String, bool),

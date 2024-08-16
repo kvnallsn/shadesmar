@@ -80,7 +80,7 @@ pub enum Command {
         route: Ipv4Network,
     },
 
-    /// Stops a running WAN device
+    /// Stops a running WAN device on a network
     WanStop {
         /// Name of network for which WAN device is assigned
         network: String,
@@ -91,6 +91,19 @@ pub enum Command {
         /// Removes all routes associated with this WAN device
         #[clap(short = 'a', long = "cleanup")]
         cleanup: bool,
+    },
+
+    /// Adds a new WAN device to a network
+    WanAdd {
+        /// Name of network for which WAN device is assigned
+        network: String,
+
+        /// Path to the WAN configuration file
+        cfg: PathBuf,
+
+        /// Name of wan device (if different from file)
+        #[clap(short, long)]
+        name: Option<String>,
     },
 
     /// Stops a (daemonized) shadesmar network

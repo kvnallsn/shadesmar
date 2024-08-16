@@ -1,4 +1,4 @@
-mod config;
+pub mod config;
 pub mod ctrl;
 mod error;
 pub mod net;
@@ -374,6 +374,14 @@ impl Bridge {
                 }
                 CtrlRequest::DelRoute(route) => {
                     let resp = match router.del_route(route) {
+                        Ok(_) => CtrlResponse::ok(),
+                        Err(error) => CtrlResponse::fail(error.to_string()),
+                    };
+
+                    strm.send(resp)?;
+                }
+                CtrlRequest::AddWan(cfg) => {
+                    let resp = match router.add_wan(cfg) {
                         Ok(_) => CtrlResponse::ok(),
                         Err(error) => CtrlResponse::fail(error.to_string()),
                     };

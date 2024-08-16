@@ -4,7 +4,7 @@ pub(crate) mod dhcp;
 
 use std::{collections::HashMap, fs::File, io, net::SocketAddr, path::Path};
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use shadesmar_net::types::Ipv4Network;
 use uuid::Uuid;
 
@@ -12,6 +12,10 @@ use crate::{
     config::dhcp::DhcpConfig,
     net::wan::{TapConfig, WgConfig},
 };
+
+pub trait YamlConfig: Sized {
+    fn read_yaml_from_file(path: &Path) -> io::Result<Self>;
+}
 
 /// Shadesmar network configuration
 ///
@@ -83,6 +87,17 @@ impl Config {
         let f = File::open(path)?;
         let cfg: Config =
             serde_yaml::from_reader(f).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        Ok(cfg)
+    }
+}
+
+impl<T> YamlConfig for T
+where
+    T: DeserializeOwned,
+{
+    fn read_yaml_from_file(path: &Path) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let cfg: T = serde_yaml::from_reader(file).map_err(|e| io::Error::other(e))?;
         Ok(cfg)
     }
 }
