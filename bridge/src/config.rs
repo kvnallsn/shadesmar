@@ -23,7 +23,6 @@ use crate::{
 pub struct Config {
     pub wan: Vec<WanConfig>,
     pub router: RouterConfig,
-    pub virtio: VirtioConfig,
 }
 
 /// Contains all information needed to initialize a WAN connection
@@ -73,11 +72,6 @@ pub struct RouterConfig {
     pub dhcp: DhcpConfig,
     pub dns: bool,
     pub table: HashMap<Ipv4Network, String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct VirtioConfig {
-    pub queues: u8,
 }
 
 impl Config {

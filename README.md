@@ -217,20 +217,31 @@ The network supports an optional WAN configuration that will be used to forward 
 | UDP        | udp        | functioning       | Forwards all traffic to the specified UDP endpoint    |
 | TAP Device | tap        | under development | Exposes traffic to host device/network                |
 
-Below is a sample configuration for a router serving the `10.67.213.0/24` subnet.  It route all traffic to 1.1.1.1/32 over the WireGuard endpoint and drop all other traffic. Additionally, it will start a DHCPv4 server that will lease addresses between `10.67.213.100` and `10.67.213.200`.
+Below is a sample configuration for a router serving the `10.67.213.0/24` subnet:  
+- Wan section explaination:
+  - Create a blackhole device that will drop all traffic it receives
+  - Create a WireGuard device with the specified parameters
+
+- Router section explaination:
+  - Set to IPv4 address + subnet of the router to `10.67.213.1/24`
+  - Drop any traffic without an explicit route (i.e., the default route is a blackhole device)
+  - Route traffic to 1.1.1.1/32 over the "dns-route" wan connection
+
 
 ```yaml
 wan:
   - name: blackhole
+    pcap: true
     device:
         type: blackhole
   - name: dns-route
-    ipv4: ---assigned ipv4 address for private key---
+    pcap: false
     device:
         type: wireguard
         key: ---secret key goes here---
         peer: ---peer public key here---
         endpoint: ---endpoint socket address here---
+        ipv4: ---assigned ipv4 address for private key---
 
 router:
     ipv4: 10.67.213.1/24
@@ -241,9 +252,6 @@ router:
     table:
         0.0.0.0/0: blackhole    # default route
         1.1.1.1/32: dns-route
-      
-virtio:
-    queues: 1
 ```
 
 
