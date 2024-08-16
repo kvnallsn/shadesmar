@@ -135,7 +135,7 @@ $ cd orion
 ```
 
 > [!IMPORTANT]
-> From this point, on all terminals should be in the `orion` directory.
+> From this point on, all terminals should be in the `orion` directory.
 
 ### Terminal A: Install and Start the Network
 The following two commands will install a new network, start it, and wait for VMs to connect.
