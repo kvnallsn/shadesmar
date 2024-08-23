@@ -2,6 +2,7 @@ pub mod config;
 pub mod ctrl;
 mod error;
 pub mod net;
+mod plugins;
 
 use std::{collections::HashMap, fmt::Display, os::fd::AsRawFd, path::PathBuf, sync::Arc};
 
@@ -20,6 +21,7 @@ use nix::{
     },
     unistd::Pid,
 };
+use plugins::WanPlugins;
 use serde::{Deserialize, Serialize};
 use shadesmar_vhost::{DeviceOpts, VHostSocket};
 
@@ -53,6 +55,9 @@ pub struct BridgeBuilder {
 
     /// Path to the data directory for network-related files
     data_dir: Option<PathBuf>,
+
+    /// Map of plugin names to paths
+    plugins: HashMap<String, PathBuf>,
 }
 
 pub struct Bridge {
@@ -61,6 +66,7 @@ pub struct Bridge {
     ctrl_socket_path: PathBuf,
     cfg: BridgeConfig,
     data_dir: PathBuf,
+    wan_plugins: WanPlugins,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -93,6 +99,15 @@ impl BridgeBuilder {
         self
     }
 
+    /// Configure the list of plugins
+    ///
+    /// ### Arguments
+    /// * `plugins` - Map of plugin name to plugin path (of .so/.dll)
+    pub fn plugins(mut self, plugins: HashMap<String, PathBuf>) -> Self {
+        self.plugins = plugins;
+        self
+    }
+
     pub fn build<S: Into<String>>(self, name: S, cfg: BridgeConfig) -> Result<Bridge, Error> {
         let run_dir = match self.run_dir {
             Some(base) => base,
@@ -120,6 +135,9 @@ impl BridgeBuilder {
             std::fs::create_dir_all(&data_dir)?;
         }
 
+        // initialize the plugins
+        let wan_plugins = WanPlugins::init(self.plugins)?;
+
         let vhost_socket_path = run_dir.join("vhost").with_extension("sock");
         let ctrl_socket_path = run_dir.join("ctrl").with_extension("sock");
 
@@ -129,6 +147,7 @@ impl BridgeBuilder {
             ctrl_socket_path,
             cfg,
             data_dir,
+            wan_plugins,
         })
     }
 }
@@ -174,9 +193,7 @@ impl Bridge {
             }
         }
 
-        Err(Error::Other(
-            "unable to stop network after 3 attempts".into(),
-        ))
+        Err(Error::new("unable to stop network after 3 attempts"))
     }
 
     /// Helper function to run the bridge, binding a new signalfd to intercept SIGTERM and SIGINT

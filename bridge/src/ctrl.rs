@@ -126,7 +126,7 @@ impl CtrlClientStream {
 
         match CtrlResponse::decode(&data)? {
             CtrlResponse::Success(obj) => Ok(obj),
-            CtrlResponse::Failed(msg) => Err(Error::Other(msg.into())),
+            CtrlResponse::Failed(msg) => Err(Error::new(msg)),
         }
     }
 
@@ -230,8 +230,8 @@ impl CtrlServerStream {
 
             let _version = data[0];
             let msg_sz = u32::from_le_bytes([data[1], data[2], data[3], data[4]]);
-            let total_sz = CTRL_MSG_HDR_SZ
-                + usize::try_from(msg_sz).map_err(|e| Error::Other(e.to_string().into()))?;
+            let total_sz =
+                CTRL_MSG_HDR_SZ + usize::try_from(msg_sz).map_err(|e| Error::new(e.to_string()))?;
 
             if data_len < total_sz {
                 // TODO: save data for later?

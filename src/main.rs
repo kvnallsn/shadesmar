@@ -3,11 +3,18 @@
 pub mod app;
 pub mod os;
 
-use std::path::PathBuf;
+use std::{collections::HashMap, path::PathBuf};
 
 use app::App;
 use clap::{Parser, Subcommand};
+use serde::Deserialize;
+use shadesmar_bridge::config::YamlConfig;
 use shadesmar_net::types::Ipv4Network;
+
+/// Path to the default configuration file
+const DEFAULT_CONFIG_FILE: &str = "/etc/shadesmar.yml";
+const DEFAULT_SHADESMAR_RUN_PATH: &str = "/var/run/shadesmar";
+const DEFAULT_SHADESMAR_DAT_PATH: &str = "/var/lib/shadesmar";
 
 /// Command line options
 #[derive(Debug, Parser)]
@@ -17,9 +24,47 @@ struct Opts {
     #[clap(short, long, global=true, action = clap::ArgAction::Count)]
     verbose: u8,
 
+    /// Path to configuration file
+    #[clap(short, long, default_value = DEFAULT_CONFIG_FILE)]
+    config: PathBuf,
+
     /// Command to execute
     #[clap(subcommand)]
     cmd: Command,
+}
+
+/// Shadesmar Configuration
+#[derive(Debug, Deserialize)]
+pub struct ShadesmarConfig {
+    /// Path to the runtime (ephemeral) directory
+    #[serde(default = "default_run_directory")]
+    pub run: PathBuf,
+
+    /// Path to the data (persistent) directory
+    #[serde(default = "default_data_directory")]
+    pub data: PathBuf,
+
+    /// List of plugins
+    #[serde(default)]
+    pub plugins: HashMap<String, PathBuf>,
+}
+
+fn default_run_directory() -> PathBuf {
+    PathBuf::from(DEFAULT_SHADESMAR_RUN_PATH)
+}
+
+fn default_data_directory() -> PathBuf {
+    PathBuf::from(DEFAULT_SHADESMAR_DAT_PATH)
+}
+
+impl Default for ShadesmarConfig {
+    fn default() -> Self {
+        Self {
+            run: default_run_directory(),
+            data: default_data_directory(),
+            plugins: HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -140,7 +185,33 @@ fn main() -> anyhow::Result<()> {
         .with_max_level(tracing_level)
         .init();
 
-    let app = App::initialize()?;
+    let mut cfg = match opts.config.exists() && opts.config.is_file() {
+        true => ShadesmarConfig::read_yaml_from_file(&opts.config)?,
+        false => ShadesmarConfig::default(),
+    };
+
+    // fixup plugin paths
+    let plugin_dir = cfg.data.join("plugins");
+    for (_name, path) in cfg.plugins.iter_mut() {
+        if path.is_relative() {
+            let full_path = plugin_dir.join(&path);
+            path.push(full_path);
+        }
+    }
+
+    tracing::debug!("loaded configuration:");
+    tracing::debug!("-- run directory: {}", cfg.run.display());
+    tracing::debug!("-- data directory: {}", cfg.data.display());
+    tracing::debug!(
+        "-- plugins: {}",
+        cfg.plugins
+            .keys()
+            .map(|s| s.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+
+    let app = App::initialize(cfg)?;
     app.run(opts.cmd)?;
 
     Ok(())

@@ -19,11 +19,7 @@ use shadesmar_bridge::{
 };
 use shadesmar_net::types::Ipv4Network;
 
-use crate::{Command, NetworkCommand, NetworkRouteCommand, NetworkWanCommand};
-
-const SHADESMAR_CFG_PATH: &str = "/etc/shadesmar";
-const SHADESMAR_RUN_PATH: &str = "/var/run/shadesmar";
-const SHADESMAR_DAT_PATH: &str = "/var/lib/shadesmar";
+use crate::{Command, NetworkCommand, NetworkRouteCommand, NetworkWanCommand, ShadesmarConfig};
 
 /// Configuration constants
 const SHADESMAR_CFG_EXT: &str = "yml";
@@ -75,14 +71,8 @@ macro_rules! table {
 
 /// Internal application state
 pub struct App {
-    /// Path to the configuration directory
-    cfg_dir: PathBuf,
-
-    /// Path to the run directory
-    run_dir: PathBuf,
-
-    /// Path to the network's data directory (pcap, etc.)
-    data_dir: PathBuf,
+    /// Application configuration
+    cfg: ShadesmarConfig,
 
     /// Theme to use for input prompts
     theme: Box<dyn Theme>,
@@ -109,39 +99,30 @@ impl App {
     ///
     /// Performs initialization steps the the shadesmar application:
     /// - creates all required directories
-    pub fn initialize() -> anyhow::Result<Self> {
-        let cfg_dir = PathBuf::from(SHADESMAR_CFG_PATH);
-        let run_dir = PathBuf::from(SHADESMAR_RUN_PATH);
-        let data_dir = PathBuf::from(SHADESMAR_DAT_PATH);
-
-        if !cfg_dir.exists() {
-            tracing::info!(path = %cfg_dir.display(), "configuration directory does not exist, attempting to create");
-            std::fs::create_dir_all(&cfg_dir)?;
-        } else if !cfg_dir.is_dir() {
+    pub fn initialize(cfg: ShadesmarConfig) -> anyhow::Result<Self> {
+        if !cfg.data.exists() {
+            tracing::info!(path = %cfg.data.display(), "data directory does not exist, attempting to create");
+            std::fs::create_dir_all(&cfg.data)?;
+        } else if !cfg.data.is_dir() {
             return Err(anyhow::anyhow!(
-                "configuration path exists but is not a directory (path: {})",
-                cfg_dir.display(),
+                "data path exists but is not a directory (path: {})",
+                cfg.data.display(),
             ));
         }
 
-        if !run_dir.exists() {
-            tracing::info!(path = %cfg_dir.display(), "runtime directory does not exist, attempting to create");
-            std::fs::create_dir_all(&run_dir)?;
-        } else if !run_dir.is_dir() {
+        if !cfg.run.exists() {
+            tracing::info!(path = %cfg.run.display(), "runtime directory does not exist, attempting to create");
+            std::fs::create_dir_all(&cfg.run)?;
+        } else if !cfg.run.is_dir() {
             return Err(anyhow::anyhow!(
                 "rutime path exists but is not a directory (path: {})",
-                run_dir.display(),
+                cfg.run.display(),
             ));
         }
 
         let theme = Box::new(dialoguer::theme::ColorfulTheme::default());
 
-        Ok(Self {
-            cfg_dir,
-            run_dir,
-            data_dir,
-            theme,
-        })
+        Ok(Self { cfg, theme })
     }
 
     /// Runs the application
@@ -177,12 +158,18 @@ impl App {
     /// ### Arguments
     /// * `network` - Name of the network
     pub fn open_network(&self, network: String) -> anyhow::Result<Network> {
-        let run_dir = self.run_dir.join(&network);
-        let data_dir = self.data_dir.join(&network);
-        let cfg_file = self
-            .cfg_dir
-            .join(&network)
-            .with_extension(SHADESMAR_CFG_EXT);
+        let run_dir = self.cfg.run.join(&network);
+        let data_dir = self.cfg.data.join(&network);
+
+        let cfg_file = data_dir.join(&network).with_extension(SHADESMAR_CFG_EXT);
+
+        if !run_dir.exists() {
+            std::fs::create_dir_all(&run_dir)?;
+        }
+
+        if !data_dir.exists() {
+            std::fs::create_dir_all(&data_dir)?;
+        }
 
         Ok(Network {
             name: network,
@@ -215,7 +202,7 @@ impl App {
         let name = name
             .or_else(|| {
                 config
-                    .file_name()
+                    .file_stem()
                     .map(|f| f.to_str().map(|s| s.to_string()))
                     .flatten()
             })
@@ -318,6 +305,7 @@ impl App {
         let bridge = Bridge::builder()
             .run_dir(network.run_dir())
             .data_dir(network.data_dir())
+            .plugins(self.cfg.plugins)
             .build(network.name(), cfg)?;
 
         network.write_pid()?;
