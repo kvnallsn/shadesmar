@@ -6,17 +6,17 @@ use std::{
     thread::JoinHandle,
 };
 
+use anyhow::anyhow;
 use mio::{event::Source, net::UnixDatagram, unix::SourceFd, Events, Interest, Poll, Token};
 use nix::sys::{
     signal::{SigSet, Signal},
     signalfd::{SfdFlags, SignalFd},
 };
 use serde::{Deserialize, Serialize};
-use shadesmar_net::plugins::{
+use shadesmar_core::plugins::{
     PluginError, PluginMessage, WanConfiguration, WanPluginConfig, WanPluginInitOptions,
     WanPluginStartOpts,
 };
-use wan_core::error::WanError;
 
 const NULPTR: *const c_void = std::ptr::null();
 const NULPTR_MUT: *mut c_void = std::ptr::null_mut();
@@ -41,9 +41,9 @@ pub struct BlackholeInstance {
 
 pub type BlackholeHandle = JoinHandle<()>;
 
-pub fn from_raw<T>(device: *mut c_void) -> Result<Box<T>, WanError> {
+pub fn from_raw<T>(device: *mut c_void) -> anyhow::Result<Box<T>> {
     match device.is_null() {
-        true => Err(WanError::with_message("null pointer")),
+        true => Err(anyhow!("null pointer!")),
         false => {
             let device: Box<T> = unsafe { Box::from_raw(device as *mut T) };
             Ok(device)
@@ -79,7 +79,7 @@ macro_rules! arg {
         }
     };
     (json: $ty:ty; data: $data:tt; error: $error:expr) => {
-        match <$ty as shadesmar_net::plugins::PluginMessage>::from_plugin_message($data) {
+        match <$ty as shadesmar_core::plugins::PluginMessage>::from_plugin_message($data) {
             Ok($data) => $data,
             Err(error) => {
                 eprintln!("unable to decode config: {error}");
@@ -107,7 +107,7 @@ pub extern "C" fn init(data: *const WanPluginInitOptions) -> i32 {
         }
     };
 
-    shadesmar_net::init_tracinig(cfg.log_level);
+    shadesmar_core::init_tracinig(cfg.log_level);
     tracing::info!(
         "[blackhole] initialized plugin (log level: {})",
         cfg.log_level
@@ -200,9 +200,9 @@ impl BlackholeDevice {
         Box::new(BlackholeDevice { _marker: 67331 })
     }
 
-    pub fn from_raw(device: *mut c_void) -> Result<Box<Self>, WanError> {
+    pub fn from_raw(device: *mut c_void) -> anyhow::Result<Box<Self>> {
         match device.is_null() {
-            true => Err(WanError::with_message("null pointer")),
+            true => Err(anyhow!("null pointer")),
             false => {
                 let device: Box<BlackholeDevice> = unsafe { Box::from_raw(device as *mut Self) };
                 Ok(device)
@@ -210,7 +210,7 @@ impl BlackholeDevice {
         }
     }
 
-    pub fn run(&self, socket: &Path) -> Result<Box<BlackholeHandle>, WanError> {
+    pub fn run(&self, socket: &Path) -> anyhow::Result<Box<BlackholeHandle>> {
         let instance = BlackholeInstance::new(socket)?;
 
         let handle = std::thread::Builder::new()
@@ -228,7 +228,7 @@ impl BlackholeInstance {
     const TOKEN_UNIX_SOCK: Token = Token(0);
     const TOKEN_SIGNAL_FD: Token = Token(1);
 
-    pub fn new(path: &Path) -> Result<Self, WanError> {
+    pub fn new(path: &Path) -> anyhow::Result<Self> {
         let poller = Poll::new()?;
 
         let mut sock = UnixDatagram::bind(path)?;
@@ -252,7 +252,7 @@ impl BlackholeInstance {
         })
     }
 
-    pub fn run(mut self) -> Result<(), WanError> {
+    pub fn run(mut self) -> anyhow::Result<()> {
         self.sigmask.thread_block()?;
 
         let mut buf = [0u8; 1600];
@@ -275,7 +275,7 @@ impl BlackholeInstance {
         Ok(())
     }
 
-    fn read_unix_sock(&self, buf: &mut [u8]) -> Result<(), WanError> {
+    fn read_unix_sock(&self, buf: &mut [u8]) -> anyhow::Result<()> {
         'aio: loop {
             match self.sock.recv_from(buf) {
                 Ok((sz, _peer)) => {
@@ -293,7 +293,7 @@ impl BlackholeInstance {
         Ok(())
     }
 
-    fn read_signal(&self) -> Result<bool, WanError> {
+    fn read_signal(&self) -> anyhow::Result<bool> {
         match self.sigfd.read_signal()? {
             None => (),
             Some(sig) => match Signal::try_from(sig.ssi_signo as i32)? {

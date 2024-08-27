@@ -17,7 +17,7 @@ use std::{
 
 use mio::net::UnixDatagram;
 use parking_lot::RwLock;
-use shadesmar_net::{
+use shadesmar_core::{
     plugins::{WanDevice, WanInstance, WanPlugin, WanPlugins},
     Ipv4Packet,
 };

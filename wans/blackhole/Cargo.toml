@@ -7,10 +7,10 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+anyhow = { workspace = true }
 mio = { workspace = true }
 nix = { workspace = true }
 serde = { workspace = true }
-shadesmar-net = { path = "../../net" }
+shadesmar-core= { path = "../../core" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-wan-core = { path = "../common" }

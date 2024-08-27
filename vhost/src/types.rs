@@ -5,7 +5,7 @@ use std::{collections::VecDeque, fmt::Debug, os::fd::RawFd, sync::Arc};
 use bitflags::bitflags;
 use nix::sys::socket::ControlMessageOwned;
 use parking_lot::Mutex;
-use shadesmar_net::EthernetPacket;
+use shadesmar_core::EthernetPacket;
 
 use crate::{device::TryFromPayload, error::PayloadError};
 

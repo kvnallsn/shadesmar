@@ -6,7 +6,7 @@ use jiff::Timestamp;
 use mio::net::UnixDatagram;
 use nix::sys::signal::Signal;
 use serde::{Deserialize, Serialize};
-use shadesmar_net::{
+use shadesmar_core::{
     protocols::{
         tcp::TcpHeader, udp::UdpHeader, ArpPacket, NET_PROTOCOL_ICMP, NET_PROTOCOL_TCP,
         NET_PROTOCOL_UDP,

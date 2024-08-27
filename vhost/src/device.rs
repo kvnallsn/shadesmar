@@ -18,7 +18,7 @@ use nix::{
     unistd,
 };
 use parking_lot::lock_api::Mutex;
-use shadesmar_net::{EthernetFrame, EthernetPacket, Switch, SwitchPort};
+use shadesmar_core::{EthernetFrame, EthernetPacket, Switch, SwitchPort};
 use vm_memory::{GuestAddress, GuestMemoryAtomic, GuestMemoryMmap, GuestRegionMmap, MmapRegion};
 
 use crate::{

@@ -9,7 +9,7 @@ use app::App;
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use shadesmar_bridge::config::YamlConfig;
-use shadesmar_net::{plugins::WanPluginInitOptions, types::Ipv4Network};
+use shadesmar_core::{plugins::WanPluginInitOptions, types::Ipv4Network};
 
 /// Path to the default configuration file
 const DEFAULT_CONFIG_FILE: &str = "/etc/shadesmar.yml";
@@ -174,7 +174,7 @@ pub enum NetworkWanCommand {
 fn main() -> anyhow::Result<()> {
     let opts = Opts::parse();
 
-    shadesmar_net::init_tracinig(opts.verbose);
+    shadesmar_core::init_tracinig(opts.verbose);
 
     let mut cfg = match opts.config.exists() && opts.config.is_file() {
         true => ShadesmarConfig::read_yaml_from_file(&opts.config)?,

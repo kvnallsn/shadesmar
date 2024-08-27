@@ -8,7 +8,7 @@ use std::{
 };
 
 use nix::unistd;
-use shadesmar_net::Switch;
+use shadesmar_core::Switch;
 use virtio_queue::{Queue, QueueOwnedT, QueueT};
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
 

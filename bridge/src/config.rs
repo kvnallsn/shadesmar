@@ -5,7 +5,7 @@ pub(crate) mod dhcp;
 use std::{collections::HashMap, fs::File, io, net::SocketAddr, path::Path};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use shadesmar_net::types::Ipv4Network;
+use shadesmar_core::types::Ipv4Network;
 use uuid::Uuid;
 
 use crate::config::dhcp::DhcpConfig;

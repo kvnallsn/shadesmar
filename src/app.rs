@@ -17,7 +17,7 @@ use shadesmar_bridge::{
     ctrl::{CtrlClientStream, CtrlRequest},
     Bridge, BridgeStatus,
 };
-use shadesmar_net::{
+use shadesmar_core::{
     plugins::{WanPluginInitOptions, WanPlugins},
     types::Ipv4Network,
 };

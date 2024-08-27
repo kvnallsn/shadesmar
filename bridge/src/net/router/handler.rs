@@ -3,7 +3,7 @@
 mod icmp;
 mod udp;
 
-use shadesmar_net::{Ipv4Packet, ProtocolError};
+use shadesmar_core::{Ipv4Packet, ProtocolError};
 
 pub use self::{icmp::IcmpHandler, udp::UdpHandler};
 

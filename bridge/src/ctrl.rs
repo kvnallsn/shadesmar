@@ -8,7 +8,7 @@ use std::{
 
 use mio::{event::Source, net::UnixListener, Token};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use shadesmar_net::types::Ipv4Network;
+use shadesmar_core::types::Ipv4Network;
 
 use crate::{config::WanConfig, error::Error};
 

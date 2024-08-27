@@ -7,7 +7,7 @@ edition = "2021"
 bitflags = "2.5.0"
 mio = { workspace = true }
 nix = { workspace = true }
-shadesmar-net = { path = "../net" }
+shadesmar-core = { path = "../core" }
 parking_lot = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }

@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use shadesmar_net::{plugins::PluginError, types::Ipv4Network, ProtocolError};
+use shadesmar_core::{plugins::PluginError, types::Ipv4Network, ProtocolError};
 
 /// Collection of errors that may occur during routing/switching packets
 #[derive(Debug, thiserror::Error)]

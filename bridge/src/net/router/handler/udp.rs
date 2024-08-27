@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use shadesmar_net::{
+use shadesmar_core::{
     protocols::{NET_PROTOCOL_UDP, UDP_HDR_SZ},
     Ipv4Packet, ProtocolError,
 };

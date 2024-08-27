@@ -1,6 +1,6 @@
 //! ICMP Protocol Handler
 
-use shadesmar_net::{
+use shadesmar_core::{
     checksum,
     protocols::{
         icmp::{ICMP_HDR_SZ, ICMP_TY_ECHO_REPLY, ICMP_TY_ECHO_REQUEST},

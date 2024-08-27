@@ -6,7 +6,7 @@ use std::{
 };
 
 use dhcproto::{v4, Decodable, Decoder, Encodable, Encoder};
-use shadesmar_net::{
+use shadesmar_core::{
     types::{Ipv4Network, MacAddress},
     ProtocolError,
 };

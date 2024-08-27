@@ -13,7 +13,7 @@ use std::{
 use flume::{Receiver, Sender};
 use mio::{event::Source, Events, Interest, Poll, Registry, Token, Waker};
 use serde::{Deserialize, Serialize};
-use shadesmar_net::{
+use shadesmar_core::{
     plugins::WanPlugins,
     protocols::ArpPacket,
     types::{EtherType, Ipv4Network, MacAddress},

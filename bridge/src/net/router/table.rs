@@ -8,7 +8,7 @@ use std::{
 
 use ip_network_table_deps_treebitmap::IpLookupTable;
 use parking_lot::RwLock;
-use shadesmar_net::types::Ipv4Network;
+use shadesmar_core::types::Ipv4Network;
 use uuid::Uuid;
 
 use crate::net::NetworkError;

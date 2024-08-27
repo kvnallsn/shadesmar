@@ -12,7 +12,7 @@ use std::{
 use parking_lot::RwLock;
 
 use serde::{Deserialize, Serialize};
-use shadesmar_net::{types::MacAddress, EthernetFrame, ProtocolError, Switch, SwitchPort};
+use shadesmar_core::{types::MacAddress, EthernetFrame, ProtocolError, Switch, SwitchPort};
 
 use super::{pcap::PcapLogger, NetworkError, ETHERNET_HDR_SZ};
 

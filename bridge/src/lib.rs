@@ -21,7 +21,7 @@ use nix::{
     unistd::Pid,
 };
 use serde::{Deserialize, Serialize};
-use shadesmar_net::plugins::WanPlugins;
+use shadesmar_core::plugins::WanPlugins;
 use shadesmar_vhost::{DeviceOpts, VHostSocket};
 
 pub use self::config::Config as BridgeConfig;
