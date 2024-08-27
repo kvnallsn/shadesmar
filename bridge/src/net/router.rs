@@ -371,7 +371,13 @@ impl Router {
         id.copy_from_slice(&buf[..16]);
         let id = Uuid::from_bytes(id);
 
-        let pkt = Ipv4Packet::parse((&buf[16..]).to_vec())?;
+        let pkt = buf[16..].to_vec();
+        self.wans
+            .read()
+            .get(&id)
+            .map(|wan| wan.update_rx(pkt.len() as u64));
+
+        let pkt = Ipv4Packet::parse(pkt)?;
         self.pcap.log_wan(id, pkt.as_bytes());
 
         if let Err(error) = self
@@ -491,7 +497,7 @@ impl Router {
         if let Some(wan) = wans.get(&wan_id) {
             self.pcap.log_wan(wan_id, pkt.as_bytes());
 
-            if let Err(error) = self.sock.send_to(pkt.as_bytes(), wan) {
+            if let Err(error) = wan.send(&self.sock, &pkt) {
                 tracing::warn!(?error, "unable to write to wan, dropping packet");
             }
         } else {

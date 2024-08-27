@@ -15,8 +15,12 @@ use std::{
     },
 };
 
+use mio::net::UnixDatagram;
 use parking_lot::RwLock;
-use shadesmar_net::plugins::{WanDevice, WanInstance, WanPlugin, WanPlugins};
+use shadesmar_net::{
+    plugins::{WanDevice, WanInstance, WanPlugin, WanPlugins},
+    Ipv4Packet,
+};
 use uuid::Uuid;
 
 use crate::config::WanConfig;
@@ -24,7 +28,7 @@ use crate::config::WanConfig;
 use super::NetworkError;
 
 /// Mapping of WAN unique ids to unix datagram socket paths
-pub type WanSocketMap = Arc<RwLock<HashMap<Uuid, PathBuf>>>;
+pub type WanSocketMap = Arc<RwLock<HashMap<Uuid, WanSocket>>>;
 
 /// A `WanMap` stores all active WAN connections
 #[derive(Default)]
@@ -63,6 +67,15 @@ pub struct WanHandle<'a> {
     instance: Option<WanInstance>,
 
     /// Send/Receive stats
+    stats: WanStats,
+}
+
+/// Represents a socket that can feed/send packets to a WAN driver/device
+pub struct WanSocket {
+    /// Full path to the WAN's unix datagram socket
+    path: PathBuf,
+
+    /// WAN statistics
     stats: WanStats,
 }
 
@@ -130,9 +143,13 @@ impl<'a> WanMap<'a> {
     /// ### Arguments
     /// * `handle` - WAN handle to insert into the map
     pub fn insert(&mut self, handle: WanHandle<'a>) {
-        self.sockets
-            .write()
-            .insert(handle.id(), handle.socket().to_path_buf());
+        self.sockets.write().insert(
+            handle.id(),
+            WanSocket {
+                path: handle.socket().to_path_buf(),
+                stats: handle.stats(),
+            },
+        );
 
         self.devices.insert(handle.id(), handle);
     }
@@ -253,6 +270,11 @@ impl<'a> WanHandle<'a> {
         self.instance.is_some()
     }
 
+    /// Returns a new (ref-counted) reference to the WAN's stats
+    pub fn stats(&self) -> WanStats {
+        self.stats.clone()
+    }
+
     /// Returns the number of bytes transmitted/sent over this WAN
     pub fn stats_tx(&self) -> u64 {
         self.stats.tx()
@@ -289,5 +311,28 @@ impl<'a> WanHandle<'a> {
         }
 
         Ok(())
+    }
+}
+
+impl WanSocket {
+    /// Sends a packet to the specified socket
+    ///
+    /// Increases the WAN stats tx field by the amount sent
+    ///
+    /// ### Arguments
+    /// * `sock` - Sock to use as sender
+    /// * `pkt` - Ipv4 Packet to transmit
+    pub fn send(&self, sock: &UnixDatagram, pkt: &Ipv4Packet) -> std::io::Result<()> {
+        let sz = sock.send_to(pkt.as_bytes(), &self.path)?;
+        self.stats.tx_add(sz as u64);
+        Ok(())
+    }
+
+    /// Increases the WAN stats rx field by the amount received
+    ///
+    /// ### Arguments
+    /// * `sz` - Amount of data received
+    pub fn update_rx(&self, sz: u64) {
+        self.stats.rx_add(sz);
     }
 }
