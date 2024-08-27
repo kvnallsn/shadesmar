@@ -2,6 +2,7 @@ mod frame;
 mod ipv4;
 mod macros;
 pub mod nat;
+pub mod plugins;
 pub mod protocols;
 pub mod types;
 
@@ -11,6 +12,21 @@ pub use self::{
     frame::{EthernetFrame, EthernetPacket},
     ipv4::{Ipv4Header, Ipv4Packet},
 };
+
+/// Initializes the logging / tracing library
+pub fn init_tracinig(level: u8) {
+    let tracing_level = match level {
+        0 => tracing::Level::WARN,
+        1 => tracing::Level::INFO,
+        2 => tracing::Level::DEBUG,
+        _ => tracing::Level::TRACE,
+    };
+
+    tracing_subscriber::FmtSubscriber::builder()
+        .with_max_level(tracing_level)
+        .pretty()
+        .init();
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum ProtocolError {

@@ -1,37 +1,43 @@
 //! Various WAN providers
 
-mod blackhole;
-mod tap;
-mod udp;
-mod wireguard;
+//mod blackhole;
+//mod tap;
+//mod udp;
+//mod wireguard;
 
 use std::{
+    collections::HashMap,
     net::Ipv4Addr,
-    os::unix::thread::JoinHandleExt,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    thread::JoinHandle,
 };
 
-use nix::sys::signal::Signal;
-use shadesmar_net::Ipv4Packet;
+use parking_lot::RwLock;
+use shadesmar_net::plugins::{WanDevice, WanInstance, WanPlugin, WanPlugins};
 use uuid::Uuid;
 
-use crate::config::{WanConfig, WanDevice};
+use crate::config::WanConfig;
 
-pub use self::{
-    blackhole::Blackhole,
-    tap::{TapConfig, TunTap},
-    udp::UdpDevice,
-    wireguard::{WgConfig, WgDevice},
-};
+use super::NetworkError;
 
-use super::{router::RouterTx, NetworkError};
+/// Mapping of WAN unique ids to unix datagram socket paths
+pub type WanSocketMap = Arc<RwLock<HashMap<Uuid, PathBuf>>>;
+
+/// A `WanMap` stores all active WAN connections
+#[derive(Default)]
+pub struct WanMap<'a> {
+    /// Map of wan unique ids (uuid) to wan handle
+    devices: HashMap<Uuid, WanHandle<'a>>,
+
+    /// Map of wan unique ids to their respective sockets
+    sockets: WanSocketMap,
+}
 
 /// A `WanHandle` provides a method to communicate with a WAN device
-pub struct WanHandle {
+pub struct WanHandle<'a> {
     /// Unique id of WAN device
     id: Uuid,
 
@@ -44,22 +50,20 @@ pub struct WanHandle {
     /// Flag to check if pcap is enabled on this WAN
     pcap: bool,
 
-    /// WAN device settings / parameters
-    device: Box<dyn Wan>,
+    /// Path to the WAN's listening unix (datagram) socket
+    socket: PathBuf,
 
-    /// Thread running the WAN device
-    thread: Option<WanThreadHandle>,
+    /// WAN plugin functions
+    vtable: WanPlugin<'a>,
+
+    /// WAN device (created by vtable)
+    device: WanDevice,
+
+    /// Handle to running instance (if running)
+    instance: Option<WanInstance>,
 
     /// Send/Receive stats
     stats: WanStats,
-}
-
-pub struct WanThreadHandle {
-    /// Thread running the WAN device
-    thread: JoinHandle<()>,
-
-    /// Transmit/sender channel to queue packets for transmission
-    tx: Box<dyn WanTx>,
 }
 
 /// Represents statistics for a WAN device
@@ -77,49 +81,6 @@ struct WanStatsInner {
 
     /// Total bytes received (recv/read) over WAN device
     rx: AtomicU64,
-}
-
-/// Core trait to describe a WAN device
-pub trait Wan: Send + Sync
-where
-    Self: 'static,
-{
-    /// Convenience function to spawn a thread to run the WAN device
-    ///
-    /// Sets up the `WanHandle` that can be used to communicate with the WAN
-    /// (i.e., queue packets for transmission and track stats)
-    ///
-    /// ### Arguments
-    /// * `id` - Unique id used to identify WAN device
-    /// * `router` - Trasmit/send channel to queue packets for routing
-    /// * `stats` - Structure to track WAN statistics (tx/rx/etc.)
-    fn spawn(
-        &self,
-        id: Uuid,
-        router: RouterTx,
-        stats: WanStats,
-    ) -> Result<WanThreadHandle, NetworkError>;
-
-    /// Returns the IPv4 to use when masquerading packets through the NAT, or
-    /// None if masquearding is not supported
-    ///
-    /// The default implementation returns None, disabling masquerading
-    fn masquerade_ipv4(&self) -> Option<Ipv4Addr> {
-        None
-    }
-
-    /// Converts a WAN device into a boxed WAN (aka type erasure)
-    fn to_boxed(self) -> Box<dyn Wan>
-    where
-        Self: Sized,
-    {
-        Box::new(self)
-    }
-}
-
-pub trait WanTx: Send + Sync {
-    /// Writes a packet to the upstream device
-    fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError>;
 }
 
 impl WanStats {
@@ -163,7 +124,63 @@ impl WanStats {
     }
 }
 
-impl WanHandle {
+impl<'a> WanMap<'a> {
+    /// Adds a new WanHandle into the map
+    ///
+    /// ### Arguments
+    /// * `handle` - WAN handle to insert into the map
+    pub fn insert(&mut self, handle: WanHandle<'a>) {
+        self.sockets
+            .write()
+            .insert(handle.id(), handle.socket().to_path_buf());
+
+        self.devices.insert(handle.id(), handle);
+    }
+
+    /// Returns the wan with the corresponding id
+    ///
+    /// ### Arguments
+    /// * `id` - Unique id of the WAN device
+    pub fn get(&self, id: Uuid) -> Option<&WanHandle<'_>> {
+        self.devices.get(&id)
+    }
+
+    /// Returns a new (shared) reference to the WAN socket map
+    pub fn sockets(&self) -> WanSocketMap {
+        Arc::clone(&self.sockets)
+    }
+
+    /// Returns the WAN id corresponding to the provided name, or None if no
+    /// WAN is found
+    ///
+    /// ### Arguments
+    /// * `name` - Name of the WAN device
+    pub fn find_by_name<S: AsRef<str>>(&self, name: S) -> Option<Uuid> {
+        let name = name.as_ref();
+        self.devices
+            .values()
+            .find_map(|handle| match handle.name() == name {
+                true => Some(handle.id()),
+                false => None,
+            })
+    }
+
+    /// Returns an iterator over the WAN devices
+    pub fn iter(&self) -> std::collections::hash_map::Iter<Uuid, WanHandle<'_>> {
+        self.devices.iter()
+    }
+
+    /// Removes a WAN device from the map
+    ///
+    /// ### Arguments
+    /// * `id` - Unique id of WAN device to remove
+    pub fn remove(&mut self, id: Uuid) -> Option<WanHandle<'_>> {
+        self.sockets.write().remove(&id);
+        self.devices.remove(&id)
+    }
+}
+
+impl<'a> WanHandle<'a> {
     /// Creates a new WAN device
     ///
     /// A WAN device represents a connection to the outside world and
@@ -171,37 +188,33 @@ impl WanHandle {
     ///
     /// ### Arguments
     /// * `cfg` - Wan Configuration
-    pub fn new(cfg: WanConfig) -> Result<Self, NetworkError> {
-        let (ty, device) = match cfg.device {
-            WanDevice::Blackhole => {
-                // generate a name for the pcap file
-                let wan = Blackhole::new();
-                ("blackhole", wan.to_boxed())
-            }
-            WanDevice::Tap(opts) => {
-                let wan = TunTap::create_tap(opts)?;
-                ("tap", wan.to_boxed())
-            }
-            WanDevice::Udp(opts) => {
-                let wan = UdpDevice::connect(&cfg.name, opts.endpoint)?;
-                ("udp", wan.to_boxed())
-            }
-            WanDevice::Wireguard(opts) => {
-                let wan = WgDevice::create(&cfg.name, &opts)?;
-                ("wireguard", wan.to_boxed())
-            }
-        };
+    pub fn new<P: AsRef<Path>>(
+        cfg: WanConfig,
+        rundir: &P,
+        plugins: &'a WanPlugins,
+    ) -> Result<Self, NetworkError> {
+        let wan_type = cfg
+            .device
+            .get("type")
+            .ok_or_else(|| NetworkError::Generic("wan plugin type not specified".into()))?;
+
+        let vtable = plugins.get_vtable(wan_type)?;
 
         let stats = WanStats::new();
+        let socket = rundir.as_ref().join(&cfg.name).with_extension("sock");
+
+        let device = vtable.create(cfg.id, &cfg.device)?;
 
         Ok(Self {
             id: cfg.id,
             name: cfg.name,
-            ty: ty.into(),
+            ty: wan_type.into(),
+            socket,
             pcap: cfg.pcap,
-            device,
             stats,
-            thread: None,
+            vtable,
+            device,
+            instance: None,
         })
     }
 
@@ -225,34 +238,19 @@ impl WanHandle {
         self.pcap
     }
 
+    /// Returns the path to the bound unix datagram socket for a WAN device
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
     /// Returns the IPv4 address of this WAN device
     pub fn ipv4(&self) -> Option<Ipv4Addr> {
-        self.device.masquerade_ipv4()
+        None
     }
 
     /// Returns true if this WAN is running, false if it has stopped
     pub fn is_running(&self) -> bool {
-        self.thread
-            .as_ref()
-            .map(|t| !t.thread.is_finished())
-            .unwrap_or(false)
-    }
-
-    /// If the WAN is running, attempts to queue the packet for transmission
-    ///
-    /// ### Arguments
-    /// * `pkt`- IPv4 packet to queue for transmission
-    pub fn write(&self, pkt: Ipv4Packet) -> Result<(), NetworkError> {
-        if let Some(ref thread) = self.thread {
-            thread.tx.write(pkt)?;
-        } else {
-            tracing::debug!(
-                "attempted to write packet to non-running wan ({})",
-                self.name
-            );
-        }
-
-        Ok(())
+        self.instance.is_some()
     }
 
     /// Returns the number of bytes transmitted/sent over this WAN
@@ -271,34 +269,25 @@ impl WanHandle {
     ///
     /// ### Arguments
     /// * `router` - Transmit/send channel to router
-    pub fn start(&mut self, router: RouterTx) -> Result<(), NetworkError> {
-        tracing::debug!("starting wan: {} ({})", self.name, self.id);
+    pub fn start(&mut self, router: &Path) -> Result<(), NetworkError> {
+        tracing::debug!("starting wan adapter");
         if self.is_running() {
-            tracing::debug!("wan already running: {}", self.name);
+            tracing::debug!("wan already running");
         }
 
-        let handle = self.device.spawn(self.id, router, self.stats.clone())?;
+        let instance = self.vtable.start(&self.device, router, &self.socket)?;
+        self.instance = Some(instance);
 
-        self.thread = Some(handle);
-
+        tracing::debug!("started wan adapter");
         Ok(())
     }
 
     /// Attempts to stop this WAN device
-    pub fn stop(&self) -> Result<(), NetworkError> {
-        if let Some(ref t) = self.thread {
-            tracing::debug!("attempting to stop wan thread");
-            let tid = t.thread.as_pthread_t();
-            nix::sys::pthread::pthread_kill(tid, Signal::SIGTERM)?;
+    pub fn stop(&mut self) -> Result<(), NetworkError> {
+        if let Some(instance) = self.instance.take() {
+            self.vtable.stop(instance)?;
         }
-        Ok(())
-    }
-}
 
-impl WanThreadHandle {
-    /// Creates a new handle to the thread running the WAN device
-    pub fn new<W: WanTx + 'static>(thread: JoinHandle<()>, tx: W) -> Self {
-        let tx = Box::new(tx);
-        Self { thread, tx }
+        Ok(())
     }
 }

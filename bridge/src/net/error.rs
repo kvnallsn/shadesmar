@@ -2,7 +2,7 @@
 
 use std::borrow::Cow;
 
-use shadesmar_net::{types::Ipv4Network, ProtocolError};
+use shadesmar_net::{plugins::PluginError, types::Ipv4Network, ProtocolError};
 
 /// Collection of errors that may occur during routing/switching packets
 #[derive(Debug, thiserror::Error)]
@@ -30,6 +30,9 @@ pub enum NetworkError {
 
     #[error("wan device not found")]
     WanDeviceNotFound(String),
+
+    #[error("plugin: {0}")]
+    PluginError(#[from] PluginError),
 
     #[error("sender channel closed")]
     ChannelClosed,

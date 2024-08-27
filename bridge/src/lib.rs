@@ -2,7 +2,6 @@ pub mod config;
 pub mod ctrl;
 mod error;
 pub mod net;
-mod plugins;
 
 use std::{collections::HashMap, fmt::Display, os::fd::AsRawFd, path::PathBuf, sync::Arc};
 
@@ -21,8 +20,8 @@ use nix::{
     },
     unistd::Pid,
 };
-use plugins::WanPlugins;
 use serde::{Deserialize, Serialize};
+use shadesmar_net::plugins::WanPlugins;
 use shadesmar_vhost::{DeviceOpts, VHostSocket};
 
 pub use self::config::Config as BridgeConfig;
@@ -55,18 +54,15 @@ pub struct BridgeBuilder {
 
     /// Path to the data directory for network-related files
     data_dir: Option<PathBuf>,
-
-    /// Map of plugin names to paths
-    plugins: HashMap<String, PathBuf>,
 }
 
 pub struct Bridge {
     name: String,
+    run_dir: PathBuf,
     vhost_socket_path: PathBuf,
     ctrl_socket_path: PathBuf,
     cfg: BridgeConfig,
     data_dir: PathBuf,
-    wan_plugins: WanPlugins,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -99,16 +95,13 @@ impl BridgeBuilder {
         self
     }
 
-    /// Configure the list of plugins
-    ///
-    /// ### Arguments
-    /// * `plugins` - Map of plugin name to plugin path (of .so/.dll)
-    pub fn plugins(mut self, plugins: HashMap<String, PathBuf>) -> Self {
-        self.plugins = plugins;
-        self
-    }
-
     pub fn build<S: Into<String>>(self, name: S, cfg: BridgeConfig) -> Result<Bridge, Error> {
+        let name = name.into();
+        let span = tracing::info_span!("create network", name = name);
+        let _enter = span.enter();
+
+        tracing::info!("configuring {name} network");
+
         let run_dir = match self.run_dir {
             Some(base) => base,
             None => {
@@ -118,7 +111,10 @@ impl BridgeBuilder {
             }
         };
 
+        tracing::debug!("network run directoy: {}", run_dir.display());
+
         if !run_dir.exists() {
+            tracing::debug!("run directory does not exist, attempting to create");
             std::fs::create_dir_all(&run_dir)?;
         }
 
@@ -126,17 +122,16 @@ impl BridgeBuilder {
             Some(base) => base,
             None => {
                 let dir = std::env::current_dir()?;
-                tracing::info!("data directory not set, using {}", dir.display());
+                tracing::debug!("data directory not set, using {}", dir.display());
                 dir
             }
         };
 
+        tracing::debug!("network data directoy: {}", data_dir.display());
         if !data_dir.exists() {
+            tracing::info!("data directory does not exist, attempting to create");
             std::fs::create_dir_all(&data_dir)?;
         }
-
-        // initialize the plugins
-        let wan_plugins = WanPlugins::init(self.plugins)?;
 
         let vhost_socket_path = run_dir.join("vhost").with_extension("sock");
         let ctrl_socket_path = run_dir.join("ctrl").with_extension("sock");
@@ -147,7 +142,7 @@ impl BridgeBuilder {
             ctrl_socket_path,
             cfg,
             data_dir,
-            wan_plugins,
+            run_dir,
         })
     }
 }
@@ -199,7 +194,10 @@ impl Bridge {
     /// Helper function to run the bridge, binding a new signalfd to intercept SIGTERM and SIGINT
     ///
     /// After the signalfd is created, calls run()
-    pub fn start(self) -> Result<(), Error> {
+    ///
+    /// ### Arguments
+    /// * `plugins` - Loaded WAN plugins
+    pub fn start(self, plugins: &WanPlugins) -> Result<(), Error> {
         let mut mask = SigSet::empty();
         mask.add(Signal::SIGTERM);
         mask.add(Signal::SIGINT);
@@ -207,7 +205,7 @@ impl Bridge {
 
         let sfd = SignalFd::with_flags(&mask, SfdFlags::SFD_NONBLOCK)?;
 
-        self.run(sfd)?;
+        self.run(sfd, plugins)?;
 
         Ok(())
     }
@@ -216,7 +214,8 @@ impl Bridge {
     ///
     /// ### Arguments
     /// * `sfd` - Signal File Descriptor
-    pub fn run(self, sfd: SignalFd) -> Result<(), Error> {
+    /// * `plugins` - Loaded WAN plugins
+    pub fn run(self, sfd: SignalFd, plugins: &WanPlugins) -> Result<(), Error> {
         const TOKEN_VHOST: Token = Token(0);
         const TOKEN_SIGNAL: Token = Token(1);
         const TOKEN_CTRL: Token = Token(2);
@@ -237,12 +236,19 @@ impl Bridge {
             .register_port_handler(DhcpServer::new(self.cfg.router.ipv4, &self.cfg.router.dhcp));
 
         // spawn thread to receive messages/packets
-        let router = Router::builder()
+        tracing::debug!(bridge = %self, "spawning router");
+        let mut router = Router::builder()
             .register_wans(&self.cfg.wan)
             .routing_table(&self.cfg.router.table)
             .register_l4_proto_handler(IcmpHandler::default())
             .register_l4_proto_handler(udp_handler)
-            .spawn(self.cfg.router.ipv4, switch.clone(), pcap_logger)?;
+            .spawn(
+                self.cfg.router.ipv4,
+                switch.clone(),
+                pcap_logger,
+                plugins,
+                &self.run_dir,
+            )?;
 
         let mut poller = Poll::new()?;
         poller
@@ -314,7 +320,7 @@ impl Bridge {
                     token => {
                         let mut closed = false;
                         match token_map.get_mut(&token) {
-                            Some(strm) => match Self::handle_ctrl(strm, &switch, &router) {
+                            Some(strm) => match Self::handle_ctrl(strm, &switch, &mut router) {
                                 Ok(action) => match action {
                                     ControlAction::Stop => break 'poll,
                                     ControlAction::Closed => {
@@ -341,8 +347,6 @@ impl Bridge {
             }
         }
 
-        std::fs::remove_file(&self.vhost_socket_path).ok();
-        std::fs::remove_file(&self.ctrl_socket_path).ok();
         tracing::info!(bridge = %self, "bridge stopped");
 
         Ok(())
@@ -352,7 +356,7 @@ impl Bridge {
     fn handle_ctrl(
         strm: &mut CtrlServerStream,
         switch: &VirtioSwitch,
-        router: &RouterHandle,
+        router: &mut RouterHandle,
     ) -> Result<ControlAction, Error> {
         let msgs = match strm.recv()? {
             Some(msgs) => msgs,

@@ -5,11 +5,16 @@ edition = "2021"
 
 [dependencies]
 bitflags = { workspace = true }
+libloading = "0.8.5"
 nix = { workspace = true }
+once_cell = "1.19.0"
 rand = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

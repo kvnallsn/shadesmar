@@ -8,10 +8,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use shadesmar_net::types::Ipv4Network;
 use uuid::Uuid;
 
-use crate::{
-    config::dhcp::DhcpConfig,
-    net::wan::{TapConfig, WgConfig},
-};
+use crate::config::dhcp::DhcpConfig;
 
 pub trait YamlConfig: Sized {
     fn read_yaml_from_file(path: &Path) -> io::Result<Self>;
@@ -45,24 +42,7 @@ pub struct WanConfig {
     pub pcap: bool,
 
     /// WAN-device specific configuration
-    pub device: WanDevice,
-}
-
-/// Various different types of WAN devices supported by shadesmar
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-pub enum WanDevice {
-    /// Pcap device (drops all packets)
-    Blackhole,
-
-    /// A generic tap device
-    Tap(TapConfig),
-
-    /// Forwards traffic to a UDP socket
-    Udp(UdpConfig),
-
-    /// Forwards all traffic over a wireguard socket
-    Wireguard(WgConfig),
+    pub device: HashMap<String, String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

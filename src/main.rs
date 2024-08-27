@@ -9,7 +9,7 @@ use app::App;
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 use shadesmar_bridge::config::YamlConfig;
-use shadesmar_net::types::Ipv4Network;
+use shadesmar_net::{plugins::WanPluginInitOptions, types::Ipv4Network};
 
 /// Path to the default configuration file
 const DEFAULT_CONFIG_FILE: &str = "/etc/shadesmar.yml";
@@ -174,16 +174,7 @@ pub enum NetworkWanCommand {
 fn main() -> anyhow::Result<()> {
     let opts = Opts::parse();
 
-    let tracing_level = match opts.verbose {
-        0 => tracing::Level::WARN,
-        1 => tracing::Level::INFO,
-        2 => tracing::Level::DEBUG,
-        _ => tracing::Level::TRACE,
-    };
-
-    tracing_subscriber::FmtSubscriber::builder()
-        .with_max_level(tracing_level)
-        .init();
+    shadesmar_net::init_tracinig(opts.verbose);
 
     let mut cfg = match opts.config.exists() && opts.config.is_file() {
         true => ShadesmarConfig::read_yaml_from_file(&opts.config)?,
@@ -199,19 +190,10 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    tracing::debug!("loaded configuration:");
-    tracing::debug!("-- run directory: {}", cfg.run.display());
-    tracing::debug!("-- data directory: {}", cfg.data.display());
-    tracing::debug!(
-        "-- plugins: {}",
-        cfg.plugins
-            .keys()
-            .map(|s| s.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+    tracing::debug!("loaded configuration:\n{cfg:#?}");
 
-    let app = App::initialize(cfg)?;
+    let plugin_opts = WanPluginInitOptions::new(opts.verbose);
+    let app = App::initialize(cfg, plugin_opts)?;
     app.run(opts.cmd)?;
 
     Ok(())

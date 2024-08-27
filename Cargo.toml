@@ -1,5 +1,5 @@
 [workspace]
-members = ["bridge", "net", "vhost", "."]
+members = ["bridge", "net", "vhost", ".", "wans/common", "wans/blackhole"]
 resolver = "2"
 
 [workspace.dependencies]

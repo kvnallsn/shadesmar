@@ -17,7 +17,10 @@ use shadesmar_bridge::{
     ctrl::{CtrlClientStream, CtrlRequest},
     Bridge, BridgeStatus,
 };
-use shadesmar_net::types::Ipv4Network;
+use shadesmar_net::{
+    plugins::{WanPluginInitOptions, WanPlugins},
+    types::Ipv4Network,
+};
 
 use crate::{Command, NetworkCommand, NetworkRouteCommand, NetworkWanCommand, ShadesmarConfig};
 
@@ -71,8 +74,14 @@ macro_rules! table {
 
 /// Internal application state
 pub struct App {
-    /// Application configuration
-    cfg: ShadesmarConfig,
+    /// Actively loaded plugins
+    plugins: WanPlugins,
+
+    /// Path to the runtime/ephemeral file storage location
+    run: PathBuf,
+
+    /// Path to the data/persistent file storage location
+    data: PathBuf,
 
     /// Theme to use for input prompts
     theme: Box<dyn Theme>,
@@ -99,7 +108,10 @@ impl App {
     ///
     /// Performs initialization steps the the shadesmar application:
     /// - creates all required directories
-    pub fn initialize(cfg: ShadesmarConfig) -> anyhow::Result<Self> {
+    pub fn initialize(
+        cfg: ShadesmarConfig,
+        plugin_opts: WanPluginInitOptions,
+    ) -> anyhow::Result<Self> {
         if !cfg.data.exists() {
             tracing::info!(path = %cfg.data.display(), "data directory does not exist, attempting to create");
             std::fs::create_dir_all(&cfg.data)?;
@@ -120,9 +132,16 @@ impl App {
             ));
         }
 
+        let plugins = WanPlugins::init(cfg.plugins, plugin_opts)?;
+
         let theme = Box::new(dialoguer::theme::ColorfulTheme::default());
 
-        Ok(Self { cfg, theme })
+        Ok(Self {
+            plugins,
+            run: cfg.run,
+            data: cfg.data,
+            theme,
+        })
     }
 
     /// Runs the application
@@ -158,8 +177,8 @@ impl App {
     /// ### Arguments
     /// * `network` - Name of the network
     pub fn open_network(&self, network: String) -> anyhow::Result<Network> {
-        let run_dir = self.cfg.run.join(&network);
-        let data_dir = self.cfg.data.join(&network);
+        let run_dir = self.run.join(&network);
+        let data_dir = self.data.join(&network);
 
         let cfg_file = data_dir.join(&network).with_extension(SHADESMAR_CFG_EXT);
 
@@ -305,12 +324,15 @@ impl App {
         let bridge = Bridge::builder()
             .run_dir(network.run_dir())
             .data_dir(network.data_dir())
-            .plugins(self.cfg.plugins)
             .build(network.name(), cfg)?;
 
         network.write_pid()?;
-        bridge.start()?;
-        network.clear_pid()?;
+
+        // NOTE: we delay the handling of the error message to ensure we
+        // cleanup the run directory in case of an error
+        let res = bridge.start(&self.plugins);
+        network.cleanup()?;
+        res?;
 
         Ok(())
     }
@@ -573,9 +595,17 @@ impl Network {
         Ok(pid)
     }
 
-    /// Removes the pidfile
-    pub fn clear_pid(&self) -> anyhow::Result<()> {
-        std::fs::remove_file(self.pid_file())?;
+    /// Deletes the run directory associated with this network
+    ///
+    /// This will remove the pid file, sockets, and any other files stored
+    /// in the ephemeral run directory.
+    pub fn cleanup(&self) -> anyhow::Result<()> {
+        std::fs::remove_dir_all(&self.run_dir).with_context(|| {
+            format!(
+                "unable to cleanup run directory ({})",
+                self.run_dir.display()
+            )
+        })?;
         Ok(())
     }
 }
