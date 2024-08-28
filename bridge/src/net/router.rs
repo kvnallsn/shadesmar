@@ -376,7 +376,7 @@ impl Router {
         id.copy_from_slice(&buf[..16]);
         let id = Uuid::from_bytes(id);
 
-        let pkt = buf[16..].to_vec();
+        let pkt = buf[16..sz].to_vec();
         self.wans
             .read()
             .get(&id)
