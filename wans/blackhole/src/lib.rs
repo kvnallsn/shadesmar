@@ -6,20 +6,13 @@ use std::{
     thread::JoinHandle,
 };
 
-use anyhow::anyhow;
 use mio::{event::Source, net::UnixDatagram, unix::SourceFd, Events, Interest, Poll, Token};
 use nix::sys::{
     signal::{SigSet, Signal},
     signalfd::{SfdFlags, SignalFd},
 };
 use serde::{Deserialize, Serialize};
-use shadesmar_core::plugins::{
-    PluginError, PluginMessage, WanConfiguration, WanPluginConfig, WanPluginInitOptions,
-    WanPluginStartOpts,
-};
-
-const NULPTR: *const c_void = std::ptr::null();
-const NULPTR_MUT: *mut c_void = std::ptr::null_mut();
+use shadesmar_core::plugins::{WanPluginConfig, WanPluginStartOpts};
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BlackholeConfig {
@@ -39,173 +32,22 @@ pub struct BlackholeInstance {
     sigmask: SigSet,
 }
 
-pub type BlackholeHandle = JoinHandle<()>;
+pub struct BlackholeHandle(JoinHandle<()>);
 
-pub fn from_raw<T>(device: *mut c_void) -> anyhow::Result<Box<T>> {
-    match device.is_null() {
-        true => Err(anyhow!("null pointer!")),
-        false => {
-            let device: Box<T> = unsafe { Box::from_raw(device as *mut T) };
-            Ok(device)
-        }
-    }
-}
-
-/// Macro to extract variables from FFI arguments
-///
-/// Supports two different types of variables
-/// * `ptr` - A raw/opaque (i.e., *const c_void) pointer to a data structure
-/// * `json` - A c-style (i.e., nul terminated) string containing JSON data
-///
-/// Examples:
-/// * Convert an opaque pointer back into a rust data structure:
-/// ```
-/// arg!(ptr: SomeDataType; data: var_containing_pointer; error: error_return_value)
-/// ```
-///
-/// * Extract JSON parameters into a structured type:
-/// ```
-/// arg!(json: MySettingsType; data: var_container_nul_terminated_string; error: error_value)
-/// ```
-macro_rules! arg {
-    (ptr: $ty:ty; data: $data:tt; error: $error:expr) => {
-        match $data.is_null() {
-            true => return $error,
-            false => {
-                // SAFETY: we check for null above. all other safety checks are the
-                // responsiblity of the caller!
-                unsafe { Box::from_raw($data as *mut $ty) }
-            }
-        }
-    };
-    (json: $ty:ty; data: $data:tt; error: $error:expr) => {
-        match <$ty as shadesmar_core::plugins::PluginMessage>::from_plugin_message($data) {
-            Ok($data) => $data,
-            Err(error) => {
-                eprintln!("unable to decode config: {error}");
-                return $error;
-            }
-        }
-    };
-}
-
-/// Initializes the plugin
-///
-/// This is called when the plugin is loaded by shadesmar on application start and
-/// should perform and generic, global configuration necessary in order to be able to
-/// spawn new WAN connections.
-///
-/// ### Returns
-/// - `0` on success
-/// - Non-zero on failure
-#[no_mangle]
-pub extern "C" fn init(data: *const WanPluginInitOptions) -> i32 {
-    let cfg = unsafe {
-        match data.as_ref() {
-            None => return PluginError::NulPointer.as_i32(),
-            Some(cfg) => cfg,
-        }
-    };
-
-    shadesmar_core::init_tracinig(cfg.log_level);
-    tracing::info!(
-        "[blackhole] initialized plugin (log level: {})",
-        cfg.log_level
-    );
-
-    0
-}
-
-/// Creates a new WAN adapter
-///
-/// Initializes a new WAN adapter for use with the provided name and configuration. The
-/// configuration is passed as a serialized JSON object.
-///
-/// ### Return
-/// * `*const c_void`
-///
-/// This function returns an opaque pointer to a handle structure.  This pointer
-/// can be passed to futher wan fuctions to interact with that specific device.
-/// For example, it can be passed to `wan_stop` to terminate the wan.
-///
-/// ### Arguments
-/// * `cfg` - JSON string containaing WAN configuration
-#[no_mangle]
-pub extern "C" fn wan_create(cfg: *const c_char) -> *mut c_void {
-    let _cfg = arg!(json: WanPluginConfig::<BlackholeConfig>; data: cfg; error: NULPTR_MUT);
-
-    let device = BlackholeDevice::new();
-    Box::into_raw(device) as *mut _
-}
-
-#[no_mangle]
-pub extern "C" fn wan_start(device: *mut c_void, settings: *const c_char) -> *const c_void {
-    let device = arg!(ptr: BlackholeDevice; data: device; error: NULPTR);
-    let settings = arg!(json: WanPluginStartOpts; data: settings; error: NULPTR);
-
-    let handle = match device.run(&settings.socket) {
-        Ok(handle) => handle,
-        Err(_error) => return std::ptr::null(),
-    };
-
-    // drop the device again, but don't return it.  we don't intend to free it yet
-    Box::into_raw(device);
-
-    Box::into_raw(Box::new(handle)) as *const c_void
-}
-
-/// Attempts to stop a running device
-#[no_mangle]
-pub extern "C" fn wan_stop(handle: *mut c_void) -> i32 {
-    let handle = arg!(ptr: BlackholeHandle; data: handle; error: -1);
-
-    // send SIGTERM to thread to indicate it's time to quit
-    let tid = handle.as_pthread_t();
-    match nix::sys::pthread::pthread_kill(tid, Signal::SIGTERM) {
-        Ok(_) => 0,
-        Err(err) => err as i32,
-    }
-}
-
-/// Attempts to release a WAN device
-#[no_mangle]
-pub extern "C" fn wan_destroy(device: *mut c_void) -> i32 {
-    let device = match from_raw::<BlackholeDevice>(device) {
-        Ok(device) => device,
-        Err(_error) => return -1,
-    };
-
-    drop(device);
-
-    0
-}
-
-/// Returns the configuration of this WAN device
-#[no_mangle]
-pub extern "C" fn wan_stats(_device: *mut c_void) -> i32 {
-    let wan_cfg = WanConfiguration::new();
-    let _wan_cfg = wan_cfg.as_plugin_message().unwrap();
-
-    0
-}
+shadesmar_core::define_wan_plugin!(
+    "blackhole",
+    BlackholeConfig,
+    BlackholeDevice,
+    BlackholeHandle
+);
 
 impl BlackholeDevice {
-    pub fn new() -> Box<Self> {
-        Box::new(BlackholeDevice { _marker: 67331 })
+    pub fn new(_cfg: WanPluginConfig<BlackholeConfig>) -> anyhow::Result<Self> {
+        Ok(BlackholeDevice { _marker: 67331 })
     }
 
-    pub fn from_raw(device: *mut c_void) -> anyhow::Result<Box<Self>> {
-        match device.is_null() {
-            true => Err(anyhow!("null pointer")),
-            false => {
-                let device: Box<BlackholeDevice> = unsafe { Box::from_raw(device as *mut Self) };
-                Ok(device)
-            }
-        }
-    }
-
-    pub fn run(&self, socket: &Path) -> anyhow::Result<BlackholeHandle> {
-        let instance = BlackholeInstance::new(socket)?;
+    pub fn run(&self, opts: WanPluginStartOpts) -> anyhow::Result<BlackholeHandle> {
+        let instance = BlackholeInstance::new(&opts.socket)?;
 
         let handle = std::thread::Builder::new()
             .name(String::from("wan-blackhole"))
@@ -214,7 +56,7 @@ impl BlackholeDevice {
                 Err(_error) => (),
             })?;
 
-        Ok(handle)
+        Ok(BlackholeHandle(handle))
     }
 }
 
@@ -297,5 +139,15 @@ impl BlackholeInstance {
         }
 
         Ok(false)
+    }
+}
+
+impl BlackholeHandle {
+    pub fn stop(self) -> anyhow::Result<()> {
+        // send SIGTERM to thread to indicate it's time to quit
+        let tid = self.0.as_pthread_t();
+        nix::sys::pthread::pthread_kill(tid, Signal::SIGTERM)?;
+
+        Ok(())
     }
 }

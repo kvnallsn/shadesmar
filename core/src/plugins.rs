@@ -1,5 +1,7 @@
 //! Plugin Support
 
+mod macros;
+
 use std::{
     borrow::Cow,
     collections::HashMap,
