@@ -187,6 +187,11 @@ impl<'a> WanMap<'a> {
         self.devices.iter()
     }
 
+    /// Returns a consuming iteartor over the WAN devices
+    pub fn into_iter(self) -> std::collections::hash_map::IntoIter<Uuid, WanHandle<'a>> {
+        self.devices.into_iter()
+    }
+
     /// Removes a WAN device from the map
     ///
     /// ### Arguments
@@ -311,6 +316,17 @@ impl<'a> WanHandle<'a> {
         }
 
         Ok(())
+    }
+}
+
+impl<'a> Drop for WanHandle<'a> {
+    fn drop(&mut self) {
+        if let Err(error) = self.vtable.destroy(&self.device) {
+            tracing::warn!(
+                "[MEMORY LEAK] failed to destroy wan device ({}): {error}",
+                self.name
+            );
+        }
     }
 }
 

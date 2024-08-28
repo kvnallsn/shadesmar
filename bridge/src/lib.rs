@@ -245,7 +245,7 @@ impl Bridge {
             .spawn(
                 self.cfg.router.ipv4,
                 switch.clone(),
-                pcap_logger,
+                Arc::clone(&pcap_logger),
                 plugins,
                 &self.run_dir,
             )?;
@@ -347,6 +347,8 @@ impl Bridge {
             }
         }
 
+        router.stop()?;
+        pcap_logger.stop();
         tracing::info!(bridge = %self, "bridge stopped");
 
         Ok(())

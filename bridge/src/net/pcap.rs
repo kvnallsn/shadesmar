@@ -7,6 +7,7 @@ use std::{
     os::unix::net::UnixDatagram,
     path::{Path, PathBuf},
     sync::Arc,
+    thread::JoinHandle,
     time::UNIX_EPOCH,
 };
 
@@ -30,13 +31,18 @@ pub type PcapMap = Arc<Mutex<HashMap<Uuid, PcapFile>>>;
 
 #[derive(Debug)]
 pub struct PcapLogger {
+    /// Transmitter for pcap thread
     tx: Sender<LogRequest>,
 
     /// List of paths to unix datagram sockets to send pcap/netflow
     taps: TapList,
+
+    /// Handle to pcap thread
+    thread: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 pub enum LogRequest {
+    Quit,
     Switch(Vec<u8>),
     Wan(Uuid, Vec<u8>),
 }
@@ -96,20 +102,28 @@ impl PcapLogger {
         let wan_files = Arc::new(Mutex::new(wan_files));
 
         let taps = Arc::new(Mutex::new(HashSet::new()));
-        let tx = Self::spawn(wan_files, Arc::clone(&taps))?;
+        let (tx, thread) = Self::spawn(wan_files, Arc::clone(&taps))?;
 
-        Ok(Arc::new(Self { tx, taps }))
+        Ok(Arc::new(Self {
+            tx,
+            taps,
+            thread: Arc::new(Mutex::new(Some(thread))),
+        }))
     }
 
-    fn spawn(wans: PcapMap, taps: TapList) -> Result<Sender<LogRequest>, NetworkError> {
+    fn spawn(
+        wans: PcapMap,
+        taps: TapList,
+    ) -> Result<(Sender<LogRequest>, JoinHandle<()>), NetworkError> {
         let (tx, rx) = flume::unbounded::<_>();
         let sock = UnixDatagram::unbound()?;
 
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name(String::from("pcap-logger"))
             .spawn(move || {
-                while let Ok(req) = rx.recv() {
+                'pcap: while let Ok(req) = rx.recv() {
                     match req {
+                        LogRequest::Quit => break 'pcap,
                         LogRequest::Switch(pkt) => {
                             let mut errors = Vec::new();
                             let mut sockets = taps.lock();
@@ -138,7 +152,7 @@ impl PcapLogger {
                 }
             })?;
 
-        Ok(tx)
+        Ok((tx, thread))
     }
 
     /// Associates a wan with a pcap device
@@ -165,6 +179,12 @@ impl PcapLogger {
     /// * `path` - Path to client socket
     pub fn add_tap<P: Into<PathBuf>>(&self, path: P) {
         self.taps.lock().insert(path.into());
+    }
+
+    /// Stops the PCAP thread
+    pub fn stop(&self) {
+        self.tx.send(LogRequest::Quit).ok();
+        self.thread.lock().take().map(|thread| thread.join().ok());
     }
 }
 

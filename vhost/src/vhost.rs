@@ -34,7 +34,7 @@ impl VHostSocket {
         switch: S,
     ) -> AppResult<()> {
         let (strm, _peer) = self.socket.accept()?;
-        tracing::info!("[vhost] accepted unix socket connection, spawning device");
+        tracing::debug!("spawning vhost-user device");
 
         let dev = VirtioDevice::new(switch, device_opts)?;
         dev.spawn(strm)?;

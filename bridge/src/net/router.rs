@@ -8,6 +8,7 @@ use std::{
     net::IpAddr,
     path::Path,
     sync::Arc,
+    thread::JoinHandle,
 };
 
 use flume::{Receiver, Sender};
@@ -44,6 +45,9 @@ const TOKEN_ROUTER_SOCKET: Token = Token(1);
 pub enum RouterMsg {
     /// Queues a packet received over a LAN port from a local device
     FromLan(EthernetPacket),
+
+    /// Tells the router to stop and exit
+    Quit,
 }
 
 /// The action a router will take after processing a packet
@@ -75,6 +79,12 @@ pub struct RouterHandle<'a> {
 
     /// Currently active WAN connections for the router
     wans: WanMap<'a>,
+
+    /// Handle to send messages to the router thread
+    tx: RouterTx,
+
+    /// Handle to the spawned router thread
+    thread: JoinHandle<()>,
 }
 
 /// A Layer 3 IPv4 Router
@@ -154,6 +164,12 @@ impl RouterTx {
         let waker = Arc::new(waker);
 
         Ok((Self(tx, waker), rx))
+    }
+
+    /// Sends a quit message down the channel
+    pub fn quit(&self) {
+        self.0.send(RouterMsg::Quit).ok();
+        self.1.wake().ok();
     }
 
     /// Queues an IPv6 packet to be routed
@@ -251,26 +267,32 @@ impl RouterBuilder {
         let port = switch.connect(tx.clone());
         let mac = MacAddress::generate();
 
-        let sockets = wans.sockets();
-        let handle = RouterHandle {
-            mac,
-            route_table: Arc::clone(&table),
-            network,
-            wans,
-        };
-
         let router = Router {
             arp: HashMap::new(),
             switch,
             port,
             poller,
             sock,
-            table,
+            table: Arc::clone(&table),
             mac,
             network,
             ip4_handlers: self.ip4_handlers,
             pcap,
-            wans: sockets,
+            wans: wans.sockets(),
+        };
+        drop(_enter);
+
+        let thread = std::thread::Builder::new()
+            .name(String::from("router"))
+            .spawn(move || router.run(rx))?;
+
+        let handle = RouterHandle {
+            mac,
+            route_table: table,
+            network,
+            wans,
+            thread,
+            tx,
         };
 
         for (net, wan) in self.table {
@@ -279,12 +301,6 @@ impl RouterBuilder {
                 Err(error) => tracing::warn!(%error, "unable to add route to {net} over {wan}"),
             }
         }
-
-        drop(_enter);
-
-        std::thread::Builder::new()
-            .name(String::from("router"))
-            .spawn(move || router.run(rx))?;
 
         Ok(handle)
     }
@@ -313,13 +329,17 @@ impl Router {
 
             for event in &events {
                 match event.token() {
-                    TOKEN_ROUTER_WAKER => match self.handle_lan(&rx) {
-                        Ok(_) => (),
-                        Err(error) => {
-                            tracing::error!(%error, "lan handle failed");
-                            break 'poll;
+                    TOKEN_ROUTER_WAKER => {
+                        for msg in rx.drain() {
+                            match msg {
+                                RouterMsg::Quit => break 'poll,
+                                RouterMsg::FromLan(frame) => match self.route(frame) {
+                                    Ok(_) => tracing::trace!("routed packet!"),
+                                    Err(error) => tracing::warn!("unable to route packet: {error}"),
+                                },
+                            }
                         }
-                    },
+                    }
                     TOKEN_ROUTER_SOCKET => match self.handle_wan(&mut buf) {
                         Ok(_) => (),
                         Err(error) => {
@@ -333,21 +353,6 @@ impl Router {
         }
 
         tracing::info!("router died");
-    }
-
-    fn handle_lan(&mut self, rx: &Receiver<RouterMsg>) -> Result<(), NetworkError> {
-        match rx.recv() {
-            Ok(RouterMsg::FromLan(pkt)) => match self.route(pkt) {
-                Ok(_) => (),
-                Err(error) => tracing::warn!(?error, "unable to route lan packet"),
-            },
-            Err(error) => {
-                tracing::error!(?error, "unable to receive packet");
-                // TODO: return error
-            }
-        }
-
-        Ok(())
     }
 
     /// Handle a packet inbound from a WAN connection
@@ -710,6 +715,20 @@ impl<'a> RouterHandle<'a> {
         if cleanup {
             self.route_table.remove_routes_by_wan(name)?;
         }
+
+        Ok(())
+    }
+
+    /// Attempts to stop the router thread and cleanup and allocated memory
+    pub fn stop(self) -> Result<(), NetworkError> {
+        // stop all wans
+        for (_id, mut wan) in self.wans.into_iter() {
+            wan.stop()?;
+        }
+
+        // signal the thread to stop
+        self.tx.quit();
+        self.thread.join().ok();
 
         Ok(())
     }

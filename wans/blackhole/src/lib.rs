@@ -148,16 +148,16 @@ pub extern "C" fn wan_start(device: *mut c_void, settings: *const c_char) -> *co
         Err(_error) => return std::ptr::null(),
     };
 
+    // drop the device again, but don't return it.  we don't intend to free it yet
+    Box::into_raw(device);
+
     Box::into_raw(Box::new(handle)) as *const c_void
 }
 
 /// Attempts to stop a running device
 #[no_mangle]
 pub extern "C" fn wan_stop(handle: *mut c_void) -> i32 {
-    let handle = match from_raw::<BlackholeHandle>(handle) {
-        Ok(handle) => handle,
-        Err(_error) => return -1,
-    };
+    let handle = arg!(ptr: BlackholeHandle; data: handle; error: -1);
 
     // send SIGTERM to thread to indicate it's time to quit
     let tid = handle.as_pthread_t();
@@ -189,12 +189,6 @@ pub extern "C" fn wan_stats(_device: *mut c_void) -> i32 {
     0
 }
 
-/// Returns the IPv4 address assigned to this one, if one exists
-#[no_mangle]
-pub extern "C" fn wan_ipv4(_device: *mut c_void) -> u32 {
-    0
-}
-
 impl BlackholeDevice {
     pub fn new() -> Box<Self> {
         Box::new(BlackholeDevice { _marker: 67331 })
@@ -210,7 +204,7 @@ impl BlackholeDevice {
         }
     }
 
-    pub fn run(&self, socket: &Path) -> anyhow::Result<Box<BlackholeHandle>> {
+    pub fn run(&self, socket: &Path) -> anyhow::Result<BlackholeHandle> {
         let instance = BlackholeInstance::new(socket)?;
 
         let handle = std::thread::Builder::new()
@@ -220,7 +214,7 @@ impl BlackholeDevice {
                 Err(_error) => (),
             })?;
 
-        Ok(Box::new(handle))
+        Ok(handle)
     }
 }
 

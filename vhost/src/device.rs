@@ -260,9 +260,9 @@ impl<S: Switch + 'static> VirtioDevice<S> {
         })
     }
 
-    pub fn spawn(mut self, strm: UnixStream) -> AppResult<()> {
-        std::thread::Builder::new()
-            .name(String::from("oathgate-device"))
+    pub fn spawn(self, strm: UnixStream) -> AppResult<()> {
+        let _thread = std::thread::Builder::new()
+            .name(String::from("vhost-user-device"))
             .spawn(move || {
                 if let Err(error) = self.run(strm) {
                     tracing::warn!(?error, "unable to run device thread");
@@ -271,7 +271,7 @@ impl<S: Switch + 'static> VirtioDevice<S> {
         Ok(())
     }
 
-    pub fn run(&mut self, mut strm: UnixStream) -> AppResult<()> {
+    pub fn run(mut self, mut strm: UnixStream) -> AppResult<()> {
         self.poll
             .registry()
             .register(&mut strm, TOKEN_STRM, Interest::READABLE)?;
