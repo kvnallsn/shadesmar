@@ -2,16 +2,17 @@
 
 use std::collections::HashMap;
 
+use parking_lot::RwLock;
 use shadesmar_core::{
     protocols::{NET_PROTOCOL_UDP, UDP_HDR_SZ},
-    Ipv4Packet, ProtocolError,
+    Ipv4Packet, Ipv4PacketOwned, ProtocolError,
 };
 
 use super::{PortHandler, ProtocolHandler};
 
 #[derive(Default)]
 pub struct UdpHandler {
-    handlers: HashMap<u16, Box<dyn PortHandler>>,
+    handlers: RwLock<HashMap<u16, Box<dyn PortHandler>>>,
 }
 
 impl UdpHandler {
@@ -19,8 +20,10 @@ impl UdpHandler {
     ///
     /// ### Arguments
     /// * `handler` - Implementation of a `PortHandler`
-    pub fn register_port_handler<P: PortHandler + 'static>(&mut self, handler: P) {
-        self.handlers.insert(handler.port(), Box::new(handler));
+    pub fn register_port_handler<P: PortHandler + 'static>(&self, handler: P) {
+        self.handlers
+            .write()
+            .insert(handler.port(), Box::new(handler));
     }
 }
 
@@ -30,8 +33,8 @@ impl ProtocolHandler for UdpHandler {
     }
 
     fn handle_protocol(
-        &mut self,
-        pkt: &Ipv4Packet,
+        &self,
+        pkt: &Ipv4PacketOwned,
         buf: &mut [u8],
     ) -> Result<usize, ProtocolError> {
         let payload = pkt.payload();
@@ -43,7 +46,7 @@ impl ProtocolHandler for UdpHandler {
         let src_port = u16::from_be_bytes([payload[0], payload[1]]);
         let dst_port = u16::from_be_bytes([payload[2], payload[3]]);
 
-        if let Some(handler) = self.handlers.get_mut(&dst_port) {
+        if let Some(handler) = self.handlers.read().get(&dst_port) {
             let len = handler.handle_port(&payload[8..], &mut buf[8..])?;
             let len = len + 8;
 

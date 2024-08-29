@@ -338,7 +338,7 @@ impl WanSocket {
     /// ### Arguments
     /// * `sock` - Sock to use as sender
     /// * `pkt` - Ipv4 Packet to transmit
-    pub fn send(&self, sock: &UnixDatagram, pkt: &Ipv4Packet) -> std::io::Result<()> {
+    pub fn send<P: Ipv4Packet>(&self, sock: &UnixDatagram, pkt: &P) -> std::io::Result<()> {
         let sz = sock.send_to(pkt.as_bytes(), &self.path)?;
         self.stats.tx_add(sz as u64);
         Ok(())

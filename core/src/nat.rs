@@ -30,19 +30,19 @@ impl NatTable {
 
     /// Inserts an entry into the NAT table based on the src ip, dst ip, and
     /// protocol specific information
-    pub fn insert(&mut self, pkt: &Ipv4Packet) {
+    pub fn insert<P: Ipv4Packet>(&mut self, pkt: &P) {
         match pkt.protocol() {
             NET_PROTOCOL_ICMP => {
                 let id = cast!(be16, &pkt.payload()[4..6]);
-                self.put_icmp(pkt.dest(), id, pkt.src());
+                self.put_icmp(pkt.dst(), id, pkt.src());
             }
             NET_PROTOCOL_TCP => {
                 let port = cast!(be16, &pkt.payload()[0..2]);
-                self.put_tcp(pkt.dest(), port, pkt.src());
+                self.put_tcp(pkt.dst(), port, pkt.src());
             }
             NET_PROTOCOL_UDP => {
                 let port = cast!(be16, &pkt.payload()[0..2]);
-                self.put_udp(pkt.dest(), port, pkt.src());
+                self.put_udp(pkt.dst(), port, pkt.src());
             }
             _ => (),
         }
@@ -82,15 +82,15 @@ impl NatTable {
     }
 
     /// Returns the NAT'd ipv4 address for a packet, if one exists
-    pub fn get(&self, pkt: &Ipv4Packet) -> Option<Ipv4Addr> {
-        let src = pkt.src();
+    pub fn get<P: Ipv4Packet>(&self, pkt: &P) -> Option<Ipv4Addr> {
+        self.get_internal(pkt.protocol(), pkt.src(), pkt.payload())
+    }
 
-        match pkt.protocol() {
+    fn get_internal(&self, protocol: u8, src: Ipv4Addr, payload: &[u8]) -> Option<Ipv4Addr> {
+        match protocol {
             NET_PROTOCOL_ICMP => {
-                let id = cast!(be16, &pkt.payload()[4..6]);
+                let id = cast!(be16, &payload[4..6]);
                 tracing::trace!(
-                    id = pkt.id(),
-                    len = pkt.len(),
                     proto = "icmp",
                     %src, %id,
                     "[nat] looking up entry"
@@ -98,10 +98,8 @@ impl NatTable {
                 self.table.get(&NatEntry::Icmp(src, id)).copied()
             }
             NET_PROTOCOL_TCP => {
-                let port = cast!(be16, &pkt.payload()[2..4]);
+                let port = cast!(be16, &payload[2..4]);
                 tracing::trace!(
-                    id = pkt.id(),
-                    len = pkt.len(),
                     proto = "tcp",
                     %src, %port,
                     "[nat] looking up entry"
@@ -110,10 +108,8 @@ impl NatTable {
                 self.table.get(&NatEntry::Tcp(src, port)).copied()
             }
             NET_PROTOCOL_UDP => {
-                let port = cast!(be16, &pkt.payload()[2..4]);
+                let port = cast!(be16, &payload[2..4]);
                 tracing::trace!(
-                    id = pkt.id(),
-                    len = pkt.len(),
                     proto = "icmp",
                     %src, %port,
                     "[nat] looking up entry"

@@ -6,6 +6,7 @@ use std::{
 };
 
 use dhcproto::{v4, Decodable, Decoder, Encodable, Encoder};
+use parking_lot::Mutex;
 use shadesmar_core::{
     types::{Ipv4Network, MacAddress},
     ProtocolError,
@@ -20,8 +21,8 @@ pub struct DhcpServer {
     network: Ipv4Network,
     lease_time: u32,
 
-    available: VecDeque<Ipv4Addr>,
-    leased: HashMap<Ipv4Addr, MacAddress>,
+    available: Mutex<VecDeque<Ipv4Addr>>,
+    leased: Mutex<HashMap<Ipv4Addr, MacAddress>>,
 }
 
 impl DhcpServer {
@@ -53,8 +54,8 @@ impl DhcpServer {
         Self {
             network,
             lease_time: 86400, // 1 day
-            available,
-            leased: HashMap::new(),
+            available: Mutex::new(available),
+            leased: Mutex::new(HashMap::new()),
         }
     }
 
@@ -70,30 +71,32 @@ impl DhcpServer {
     ///
     /// ### Arguments
     /// * `msg` - DHCP request message
-    pub fn lease_ip(&mut self, msg: &v4::Message) -> Option<Ipv4Network> {
+    pub fn lease_ip(&self, msg: &v4::Message) -> Option<Ipv4Network> {
         let client_mac = MacAddress::parse(msg.chaddr()).unwrap();
 
+        let mut available = self.available.lock();
+        let mut leased = self.leased.lock();
         let ip = match self.get_requested_ip(msg) {
-            Some(ria) if !self.network.contains(ria) => self.available.pop_front(),
-            Some(ria) => match self.leased.get(&ria) {
+            Some(ria) if !self.network.contains(ria) => available.pop_front(),
+            Some(ria) => match leased.get(&ria) {
                 None => {
-                    self.available.retain(|ip| *ip != ria);
+                    available.retain(|ip| *ip != ria);
                     Some(ria)
                 }
                 Some(mac) if *mac == client_mac => {
-                    self.available.retain(|ip| *ip != ria);
+                    available.retain(|ip| *ip != ria);
                     Some(ria)
                 }
-                _ => self.available.pop_front(),
+                _ => available.pop_front(),
             },
-            None => self.available.pop_front(),
+            None => available.pop_front(),
         };
 
         tracing::debug!("[dhcp] leasing {ip:?} to {client_mac}");
 
         match ip {
             Some(ip) => {
-                self.leased.insert(ip, client_mac);
+                leased.insert(ip, client_mac);
                 Some(Ipv4Network::new(ip, self.network.subnet_mask_bits()))
             }
             None => {
@@ -118,7 +121,7 @@ impl DhcpServer {
     ///
     /// ### Arguments
     /// * `msg` - DHCPDISCOVER message
-    pub fn handle_discover(&mut self, msg: v4::Message) -> Result<v4::Message, ProtocolError> {
+    pub fn handle_discover(&self, msg: v4::Message) -> Result<v4::Message, ProtocolError> {
         tracing::trace!("[dhcp] handling discover message");
         let ip = match self.lease_ip(&msg) {
             Some(ip) => ip,
@@ -136,7 +139,7 @@ impl DhcpServer {
     ///
     /// ### Arguments
     /// * `msg` - DHCPREQUEST message
-    pub fn handle_request(&mut self, msg: v4::Message) -> Result<v4::Message, ProtocolError> {
+    pub fn handle_request(&self, msg: v4::Message) -> Result<v4::Message, ProtocolError> {
         tracing::trace!("[dhcp] handling request message");
 
         let ip = match self.lease_ip(&msg) {
@@ -200,7 +203,7 @@ impl PortHandler for DhcpServer {
         67
     }
 
-    fn handle_port(&mut self, data: &[u8], buf: &mut [u8]) -> Result<usize, ProtocolError> {
+    fn handle_port(&self, data: &[u8], buf: &mut [u8]) -> Result<usize, ProtocolError> {
         tracing::trace!("[dhcp] got packet");
         let msg = v4::Message::decode(&mut Decoder::new(data))
             .map_err(|e| ProtocolError::Other(e.to_string()))?;

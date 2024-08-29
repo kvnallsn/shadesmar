@@ -10,7 +10,7 @@ use std::net::Ipv4Addr;
 
 pub use self::{
     frame::{EthernetFrame, EthernetPacket},
-    ipv4::{Ipv4Header, Ipv4Packet},
+    ipv4::{Ipv4Header, Ipv4Packet, Ipv4PacketOwned, Ipv4PacketRef},
 };
 
 /// Initializes the logging / tracing library

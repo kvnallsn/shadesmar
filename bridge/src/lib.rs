@@ -231,7 +231,7 @@ impl Bridge {
         // spawn the default route / upstream
         //let wan = parse_wan(&self.cfg.wan)?;
 
-        let mut udp_handler = UdpHandler::default();
+        let udp_handler = UdpHandler::default();
         udp_handler
             .register_port_handler(DhcpServer::new(self.cfg.router.ipv4, &self.cfg.router.dhcp));
 

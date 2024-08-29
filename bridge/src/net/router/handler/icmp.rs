@@ -6,7 +6,7 @@ use shadesmar_core::{
         icmp::{ICMP_HDR_SZ, ICMP_TY_ECHO_REPLY, ICMP_TY_ECHO_REQUEST},
         NET_PROTOCOL_ICMP,
     },
-    Ipv4Packet, ProtocolError,
+    Ipv4Packet, Ipv4PacketOwned, ProtocolError,
 };
 
 use super::ProtocolHandler;
@@ -20,8 +20,8 @@ impl ProtocolHandler for IcmpHandler {
     }
 
     fn handle_protocol(
-        &mut self,
-        pkt: &Ipv4Packet,
+        &self,
+        pkt: &Ipv4PacketOwned,
         buf: &mut [u8],
     ) -> Result<usize, ProtocolError> {
         let payload = pkt.payload();
