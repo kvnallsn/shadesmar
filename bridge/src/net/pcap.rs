@@ -61,7 +61,7 @@ impl PcapLogger {
             std::fs::create_dir_all(&pcap_dir)?;
         }
 
-        let wan_files = cfg
+        let mut wan_files = cfg
             .wan
             .iter()
             .map(|wan| {
@@ -98,6 +98,14 @@ impl PcapLogger {
                 (wan.id, file)
             })
             .collect::<HashMap<_, _>>();
+
+        let switch_file = format!("switch-{now}.pcap");
+        let switch_file = File::options()
+            .create_new(true)
+            .write(true)
+            .open(pcap_dir.join(switch_file))?;
+        let switch_pcap = PcapWriter::new(switch_file)?;
+        wan_files.insert(Uuid::nil(), PcapFile::Enabled(switch_pcap));
 
         let wan_files = Arc::new(Mutex::new(wan_files));
 
@@ -136,6 +144,11 @@ impl PcapLogger {
 
                             for tap in errors {
                                 sockets.remove(&tap);
+                            }
+
+                            let mut wans = wans.lock();
+                            if let Some(ref mut wr) = wans.get_mut(&Uuid::nil()) {
+                                wr.write(&pkt).ok();
                             }
                         },
                         LogRequest::Wan(id, pkt) => {
