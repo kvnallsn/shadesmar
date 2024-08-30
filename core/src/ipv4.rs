@@ -1,6 +1,9 @@
 //! IPv4 related structures
 
-use std::{fmt::Display, net::Ipv4Addr};
+use std::{
+    fmt::{Debug, Display},
+    net::Ipv4Addr,
+};
 
 use bitflags::bitflags;
 use rand::Rng;
@@ -8,7 +11,7 @@ use rand::Rng;
 use crate::{
     cast, ph_checksum,
     protocols::{NET_PROTOCOL_TCP, NET_PROTOCOL_UDP},
-    types::buffers::PacketBuffer,
+    types::buffers::{PacketBuffer, PacketBufferPool},
     ProtocolError,
 };
 
@@ -44,7 +47,6 @@ pub struct Ipv4Header {
 }
 
 /// An IPv4 packet consists of a the IPv4 header and a payload
-#[derive(Debug)]
 pub struct Ipv4PacketMut<'a> {
     data: &'a mut [u8],
 }
@@ -59,6 +61,12 @@ pub struct Ipv4PacketOwned {
 pub trait Ipv4Packet {
     /// Returns a reference underlying byte buffer (including the IPv4 header)
     fn as_bytes(&self) -> &[u8];
+
+    /// Takes ownership of the underlying data
+    ///
+    /// NOTE: this function will allocate a new vector and copy the data in the packet
+    /// to the newly allocated space
+    fn to_owned(self) -> Ipv4PacketOwned;
 
     /// Returns a slice of bytes containing the IPv4 header
     fn header_bytes(&self) -> &[u8] {
@@ -75,7 +83,13 @@ pub trait Ipv4Packet {
     /// Returns the identification value in the IPv4 header
     fn id(&self) -> u16 {
         let b = self.as_bytes();
-        u16::from_be_bytes([b[0], b[1]])
+        u16::from_be_bytes([b[4], b[5]])
+    }
+
+    /// Returns the Time-To-Live (TTL) in the IPv4 header
+    fn ttl(&self) -> u8 {
+        let b = self.as_bytes();
+        b[8]
     }
 
     /// Returns the source ip address
@@ -152,7 +166,7 @@ pub trait Ipv4Packet {
         //Ipv4Header::new(self.dst, self.src, self.protocol, payload.len() as u16)
         let mut rng = rand::thread_rng();
 
-        let length = (&pkt[20..]).len();
+        let length = pkt.len();
         let length: u16 = length
             .try_into()
             .map_err(|_| ProtocolError::FragmentationRequired(length))?;
@@ -205,7 +219,7 @@ pub trait MutableIpv4Packet: Ipv4Packet {
         let b = self.as_mut();
         b[12..16].copy_from_slice(&u32::from(ip).to_be_bytes());
 
-        self.fix_transport_checksum();
+        self.fix_checksum();
     }
 
     /// Sets the destination ip address to the provided value and recomputes the header checksum
@@ -215,6 +229,19 @@ pub trait MutableIpv4Packet: Ipv4Packet {
     fn unmasquerade(&mut self, ip: Ipv4Addr) {
         let b = self.as_mut();
         b[16..20].copy_from_slice(&u32::from(ip).to_be_bytes());
+
+        self.fix_checksum();
+    }
+
+    /// Recomputes the checksum for the IPv4 header + follow-on headers
+    ///
+    /// Note: only tcp/udp L4 headers are currently handled
+    fn fix_checksum(&mut self) {
+        let b = self.as_mut();
+
+        b[10..12].copy_from_slice(&[0x00, 0x00]);
+        let csum = crate::checksum(&b[0..20]);
+        b[10..12].copy_from_slice(&csum.to_be_bytes());
 
         self.fix_transport_checksum();
     }
@@ -346,16 +373,6 @@ impl<'a> Ipv4PacketRef<'a> {
     pub fn new(data: &'a [u8]) -> Result<Self, ProtocolError> {
         Ok(Self { data })
     }
-
-    /// Takes ownership of the underlying data
-    ///
-    /// NOTE: this function will allocate a new vector and copy the data in the packet
-    /// to the newly allocated space
-    pub fn to_owned(self) -> Ipv4PacketOwned {
-        Ipv4PacketOwned {
-            data: PacketBuffer::new(self.data.to_vec()),
-        }
-    }
 }
 
 impl<'a> Ipv4PacketMut<'a> {
@@ -364,14 +381,9 @@ impl<'a> Ipv4PacketMut<'a> {
         Ok(Self { data })
     }
 
-    /// Takes ownership of the underlying data
-    ///
-    /// NOTE: this function will allocate a new vector and copy the data in the packet
-    /// to the newly allocated space
-    pub fn to_owned(self) -> Ipv4PacketOwned {
-        Ipv4PacketOwned {
-            data: PacketBuffer::new(self.data.to_vec()),
-        }
+    /// Returns an immutable reference to the packet data
+    pub fn as_ref(&self) -> Ipv4PacketRef {
+        Ipv4PacketRef { data: &self.data }
     }
 }
 
@@ -433,17 +445,35 @@ impl Ipv4Packet for Ipv4PacketOwned {
     fn as_bytes(&self) -> &[u8] {
         &self.data
     }
+
+    fn to_owned(self) -> Ipv4PacketOwned {
+        self
+    }
 }
 
 impl<'a> Ipv4Packet for Ipv4PacketRef<'a> {
     fn as_bytes(&self) -> &[u8] {
         &self.data
     }
+
+    fn to_owned(self) -> Ipv4PacketOwned {
+        let mut data = PacketBufferPool::get();
+        data.extend_from_slice(&self.data);
+
+        Ipv4PacketOwned { data }
+    }
 }
 
 impl<'a> Ipv4Packet for Ipv4PacketMut<'a> {
     fn as_bytes(&self) -> &[u8] {
         &self.data
+    }
+
+    fn to_owned(self) -> Ipv4PacketOwned {
+        let mut data = PacketBufferPool::get();
+        data.extend_from_slice(&self.data);
+
+        Ipv4PacketOwned { data }
     }
 }
 
@@ -495,6 +525,32 @@ impl Display for Ipv4Flags {
     }
 }
 
+impl<'a> Debug for Ipv4PacketRef<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let src = self.src();
+        let dst = self.dst();
+        let proto = self.protocol();
+        let ttl = self.ttl();
+        let length = self.len();
+        let csum = self.checksum();
+        let flags = self.flags();
+
+        write!(f, "IPv4Packet {{ src: {src}, dst: {dst}, proto: 0x{proto:02x}, ttl: {ttl}, csum: 0x{csum:04x}, len: {length}, flags: {flags} }}")
+    }
+}
+
+impl Debug for Ipv4PacketOwned {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.as_ref())
+    }
+}
+
+impl<'a> Debug for Ipv4PacketMut<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.as_ref())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{io::Read, net::Ipv4Addr};
@@ -503,11 +559,14 @@ mod tests {
 
     use super::{Ipv4Packet, Ipv4PacketOwned, MutableIpv4Packet};
 
-    fn init_tracing() {
+    fn init_tracing(test_name: &str) -> tracing::span::EnteredSpan {
         tracing_subscriber::FmtSubscriber::builder()
             .with_max_level(tracing::Level::DEBUG)
             .pretty()
-            .init();
+            .try_init()
+            .ok();
+
+        tracing::info_span!("ipv4 tests", test_name).entered()
     }
 
     fn read_file(path: &str) -> Ipv4PacketOwned {
@@ -518,24 +577,83 @@ mod tests {
         fd.read_to_end(&mut data).unwrap();
 
         let pkt = Ipv4PacketOwned::new(data).unwrap();
-        tracing::debug!("ipv4 packet id: 0x{:04x}", pkt.id());
+        tracing::trace!("ipv4 packet id: 0x{:04x}", pkt.id());
         pkt
     }
 
     #[test]
+    fn validate_ipv4_pkt_id() {
+        let _span = init_tracing("validate_ipv4_pkt_id");
+
+        let pkt = read_file("data/checksum.bin");
+        assert_eq!(
+            pkt.id(),
+            0x999F,
+            "packet identification did not match expected value"
+        );
+    }
+
+    #[test]
     fn validate_ipv4_flags() {
+        let _span = init_tracing("validate_ipv4_flags");
+
         let pkt = read_file("data/checksum.bin");
         let expected = Ipv4Flags::DontFragment;
         assert_eq!(pkt.flags(), expected, "flags did not match expected values");
     }
 
     #[test]
+    fn validate_ipv4_pkt_ttl() {
+        let _span = init_tracing("validate_ipv4_pkt_ttl");
+
+        let pkt = read_file("data/checksum.bin");
+        assert_eq!(pkt.ttl(), 58, "packet ttl not match expected value");
+    }
+
+    #[test]
+    fn validate_ipv4_pkt_protocol() {
+        let _span = init_tracing("validate_ipv4_pkt_protocol");
+
+        let pkt = read_file("data/checksum.bin");
+        assert_eq!(
+            pkt.protocol(),
+            6,
+            "packet protocol not match expected value"
+        );
+    }
+
+    #[test]
     fn fixup_tcp_checksum() {
-        init_tracing();
+        let _span = init_tracing("fixup_tcp_checksum");
+
         let mut pkt = read_file("data/checksum.bin");
         pkt.unmasquerade(Ipv4Addr::from([10, 10, 10, 10]));
         let payload = pkt.payload();
         let tcp_csum = u16::from_be_bytes([payload[16], payload[17]]);
         assert_eq!(tcp_csum, 0xE6E7, "checksum mismatch");
+    }
+
+    #[test]
+    fn validate_ipv4_pkt_src() {
+        let _span = init_tracing("validate_ipv4_pkt_src");
+
+        let pkt = read_file("data/checksum.bin");
+        assert_eq!(
+            pkt.src(),
+            Ipv4Addr::new(151, 101, 2, 132),
+            "packet src ip not match expected value"
+        );
+    }
+
+    #[test]
+    fn validate_ipv4_pkt_dst() {
+        let _span = init_tracing("validate_ipv4_pkt_dst");
+
+        let pkt = read_file("data/checksum.bin");
+        assert_eq!(
+            pkt.dst(),
+            Ipv4Addr::new(10, 10, 10, 11),
+            "packet dst ip not match expected value"
+        );
     }
 }
