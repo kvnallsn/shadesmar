@@ -4,8 +4,9 @@ use std::collections::HashMap;
 
 use parking_lot::RwLock;
 use shadesmar_core::{
+    ipv4::{Ipv4Packet, Ipv4PacketOwned},
     protocols::{NET_PROTOCOL_UDP, UDP_HDR_SZ},
-    Ipv4Packet, Ipv4PacketOwned, ProtocolError,
+    ProtocolError,
 };
 
 use super::{PortHandler, ProtocolHandler};

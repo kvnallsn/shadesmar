@@ -8,6 +8,7 @@ use rand::Rng;
 use crate::{
     cast, ph_checksum,
     protocols::{NET_PROTOCOL_TCP, NET_PROTOCOL_UDP},
+    types::buffers::PacketBuffer,
     ProtocolError,
 };
 
@@ -44,57 +45,75 @@ pub struct Ipv4Header {
 
 /// An IPv4 packet consists of a the IPv4 header and a payload
 #[derive(Debug)]
-pub struct Ipv4PacketRef<'a> {
-    header: Ipv4Header,
+pub struct Ipv4PacketMut<'a> {
     data: &'a mut [u8],
 }
+pub struct Ipv4PacketRef<'a> {
+    data: &'a [u8],
+}
+
 pub struct Ipv4PacketOwned {
-    header: Ipv4Header,
-    data: Vec<u8>,
+    data: PacketBuffer,
 }
 
 pub trait Ipv4Packet {
-    /// Returns a reference to the IPv4 header associated with the packet
-    fn header(&self) -> Ipv4Header;
-
     /// Returns a reference underlying byte buffer (including the IPv4 header)
     fn as_bytes(&self) -> &[u8];
 
-    /// Returns a mutable reference underlying byte buffer (including the IPv4 header)
-    fn as_mut(&mut self) -> &mut [u8];
+    /// Returns a slice of bytes containing the IPv4 header
+    fn header_bytes(&self) -> &[u8] {
+        let end = self.header_length();
+        &self.as_bytes()[0..end]
+    }
 
+    /// Returns the size of this header, in bytes
+    fn header_length(&self) -> usize {
+        let b = self.as_bytes();
+        usize::from(b[0] & 0x0F) * DWORD_SIZE
+    }
+
+    /// Returns the identification value in the IPv4 header
     fn id(&self) -> u16 {
-        self.header().id
+        let b = self.as_bytes();
+        u16::from_be_bytes([b[0], b[1]])
     }
 
     /// Returns the source ip address
     fn src(&self) -> Ipv4Addr {
-        self.header().src
+        let b = self.as_bytes();
+        let ip = u32::from_be_bytes([b[12], b[13], b[14], b[15]]);
+        Ipv4Addr::from(ip)
     }
 
     /// Returns the destination ip address
     fn dst(&self) -> Ipv4Addr {
-        self.header().dst
+        let b = self.as_bytes();
+        let ip = u32::from_be_bytes([b[16], b[17], b[18], b[19]]);
+        Ipv4Addr::from(ip)
     }
 
     /// Returns the next layer (i.e., transport) layer protocol
     fn protocol(&self) -> u8 {
-        self.header().protocol
+        let b = self.as_bytes();
+        b[9]
     }
 
     /// Returns the flags set on this packet
     fn flags(&self) -> Ipv4Flags {
-        self.header().flags
+        let b = self.as_bytes();
+        Ipv4Flags::from_bits(b[6] >> 5).unwrap_or(Ipv4Flags::empty())
     }
 
     /// Returns true if this packet contains fragments
     fn has_fragments(&self) -> bool {
-        self.header().flags.contains(Ipv4Flags::MoreFragments)
+        self.flags().contains(Ipv4Flags::MoreFragments)
     }
 
     /// Returns the offset of the fragment (or zero, if no fragments)
     fn fragment_offset(&self) -> u16 {
-        self.header().frag_offset
+        let b = self.as_bytes();
+        let fo = u16::from_be_bytes([b[6], b[7]]);
+        (fo & 0x1FFF) * 8
     }
 
     /// Returns the IP checksum of the packet, as stored in the IPv4 header
@@ -106,12 +125,8 @@ pub trait Ipv4Packet {
     /// Returns the total length of the packet, as stored in the ipv4
     /// header (includes header + payload)
     fn len(&self) -> u16 {
-        self.header().length
-    }
-
-    /// Returns the size of this header, in bytes
-    fn header_length(&self) -> usize {
-        self.header().header_length()
+        let b = self.as_bytes();
+        u16::from_be_bytes([b[2], b[3]])
     }
 
     /// Returns a reference to the data containing the IPv4 packet's payload
@@ -123,6 +138,50 @@ pub trait Ipv4Packet {
         &self.as_bytes()[offset..]
     }
 
+    /// Reverses the IPv4 source and destination addresses, generates a new id, and computes
+    /// the internet checksum over the provided payload length
+    ///
+    /// ### Arguments
+    /// * `flags` - IPv4 flags to set on packet
+    /// * `pkt` - Layer 3 Packet (including Layer 4+ data) for which to store header in first 20 bytes
+    fn gen_response_header(
+        &self,
+        flags: Ipv4Flags,
+        pkt: &mut [u8],
+    ) -> Result<Ipv4Addr, ProtocolError> {
+        //Ipv4Header::new(self.dst, self.src, self.protocol, payload.len() as u16)
+        let mut rng = rand::thread_rng();
+
+        let length = (&pkt[20..]).len();
+        let length: u16 = length
+            .try_into()
+            .map_err(|_| ProtocolError::FragmentationRequired(length))?;
+
+        let id: u16 = rng.gen();
+
+        pkt[0] = 0x45; // 4: IPv4 | 5: header length
+        pkt[2..4].copy_from_slice(&length.to_be_bytes());
+        pkt[4..6].copy_from_slice(&id.to_be_bytes());
+        pkt[6] = flags.bits() << 5;
+        pkt[7] = 0x00; // no fragmentation
+        pkt[8] = 64; // default TTL is 64
+        pkt[9] = self.protocol();
+        pkt[10..12].copy_from_slice(&[0x00, 0x00]); // clear checksum
+        pkt[12..16].copy_from_slice(&self.dst().octets());
+        pkt[16..20].copy_from_slice(&self.src().octets());
+
+        let csum = crate::checksum(&pkt[0..20]);
+        pkt[10..12].copy_from_slice(&csum.to_be_bytes());
+
+        Ok(self.src())
+    }
+}
+
+/// Actions that mutate the current packet
+pub trait MutableIpv4Packet: Ipv4Packet {
+    /// Returns a mutable reference underlying byte buffer (including the IPv4 header)
+    fn as_mut(&mut self) -> &mut [u8];
+
     /// Returns a mutable reference to the data containing the IPv4 packet's payload
     ///
     /// The packet's payload starts with (generally) the transport protocols header
@@ -132,14 +191,19 @@ pub trait Ipv4Packet {
         &mut self.as_mut()[offset..]
     }
 
+    /// Sets the length field of the IPv4 header
+    fn set_length(&mut self, len: u16) {
+        let b = self.as_mut();
+        b[2..3].copy_from_slice(&len.to_be_bytes());
+    }
+
     /// Sets the source ip address to the provided value and recomputes the header checksum
     ///
     /// ### Arguments
     /// * `ip` - New src ip address
     fn masquerade(&mut self, ip: Ipv4Addr) {
-        let mut hdr = self.header();
-        hdr.masquerade(ip);
-        hdr.as_bytes(self.as_mut());
+        let b = self.as_mut();
+        b[12..16].copy_from_slice(&u32::from(ip).to_be_bytes());
 
         self.fix_transport_checksum();
     }
@@ -149,25 +213,23 @@ pub trait Ipv4Packet {
     /// ### Arguments
     /// * `ip` - New destinaton ip address
     fn unmasquerade(&mut self, ip: Ipv4Addr) {
-        let mut hdr = self.header();
-        hdr.unmasquerade(ip);
-        hdr.as_bytes(self.as_mut());
+        let b = self.as_mut();
+        b[16..20].copy_from_slice(&u32::from(ip).to_be_bytes());
 
         self.fix_transport_checksum();
     }
 
     /// Clears the flags iset on this packet
     fn clear_flags(&mut self) {
-        let mut hdr = self.header();
-        hdr.flags = Ipv4Flags::empty();
-        hdr.as_bytes(self.as_mut())
+        let b = self.as_mut();
+        b[6] &= 0x1F;
     }
 
     /// Clears the fragment offset (sets to zero) for this packet
     fn clear_frag_offset(&mut self) {
-        let mut hdr = self.header();
-        hdr.frag_offset = 0;
-        hdr.as_bytes(self.as_mut())
+        let b = self.as_mut();
+        b[6] &= 0xE0;
+        b[7] = 0x00;
     }
 
     /// TCP and UDP both use a pseudo-ip header in their checksum fields
@@ -190,14 +252,6 @@ pub trait Ipv4Packet {
         payload[s..e].copy_from_slice(&[0, 0]);
         let sum = ph_checksum(src, dst, proto, payload);
         payload[s..e].copy_from_slice(&sum.to_be_bytes());
-    }
-
-    /// Generates a new Ipv4 header to use as a reply message
-    ///
-    /// ### Arguments
-    /// * `payload` - Payload that will be set in the reply
-    fn gen_response_header(&self, payload: &[u8]) -> Ipv4Header {
-        self.header().gen_reply(payload)
     }
 }
 
@@ -285,78 +339,12 @@ impl Ipv4Header {
             dst,
         })
     }
-
-    /// Returns the length, in bytes, of the header
-    pub fn header_length(&self) -> usize {
-        usize::from(self.ihl) * DWORD_SIZE
-    }
-
-    /// Reverses the IPv4 source and destination addresses, generates a new id, and computes
-    /// the internet checksum over the provided payload length
-    ///
-    /// ### Arguments
-    /// * `payload` - Payload used to fill length field and generate checksum
-    pub fn gen_reply(&self, payload: &[u8]) -> Self {
-        Ipv4Header::new(self.dst, self.src, self.protocol, payload.len() as u16)
-    }
-
-    /// Replaces the source address with the supplied value and returns
-    /// the original ipv4 address
-    ///
-    /// ### Arguments
-    /// * `src` - New IPv4 src address
-    fn masquerade(&mut self, src: Ipv4Addr) -> Ipv4Addr {
-        let old = self.src;
-        self.src = src;
-        old
-    }
-
-    /// Replaces the destinaton address with the supplied value and returns
-    /// the original ipv4 address
-    ///
-    /// ### Arguments
-    /// * `src` - New IPv4 destination address
-    fn unmasquerade(&mut self, dst: Ipv4Addr) -> Ipv4Addr {
-        let old = self.dst;
-        self.dst = dst;
-        old
-    }
-
-    /// Returns this header as a byte slice / array.
-    ///
-    /// This does not append the payload but the length field and checksum
-    /// are calcuated from the payload length
-    pub fn as_bytes(&self, rpkt: &mut [u8]) {
-        let flags = u16::from(self.flags.bits());
-        let flags_frag = (flags << 13) | self.frag_offset;
-
-        rpkt[0] = (self.version << 4) | 5; // Generally 0x45
-        rpkt[2..4].copy_from_slice(&self.length.to_be_bytes());
-        rpkt[4..6].copy_from_slice(&self.id.to_be_bytes());
-        rpkt[6..8].copy_from_slice(&flags_frag.to_be_bytes());
-        rpkt[8] = self.ttl;
-        rpkt[9] = self.protocol;
-        rpkt[10..12].copy_from_slice(&[0x00, 0x00]); // clear checksum
-        rpkt[12..16].copy_from_slice(&self.src.octets());
-        rpkt[16..20].copy_from_slice(&self.dst.octets());
-
-        let csum = crate::checksum(&rpkt[0..20]);
-        rpkt[10..12].copy_from_slice(&csum.to_be_bytes());
-    }
-
-    /// Returns this header an array of bytes
-    pub fn into_bytes(self) -> [u8; 20] {
-        let mut buf = [0u8; 20];
-        self.as_bytes(&mut buf);
-        buf
-    }
 }
 
 impl<'a> Ipv4PacketRef<'a> {
     /// Creates a new Ipv4Packet that can mutate the underlying data
-    pub fn new(data: &'a mut [u8]) -> Result<Self, ProtocolError> {
-        let header = Ipv4Header::extract_from_slice(data)?;
-        Ok(Self { header, data })
+    pub fn new(data: &'a [u8]) -> Result<Self, ProtocolError> {
+        Ok(Self { data })
     }
 
     /// Takes ownership of the underlying data
@@ -365,17 +353,32 @@ impl<'a> Ipv4PacketRef<'a> {
     /// to the newly allocated space
     pub fn to_owned(self) -> Ipv4PacketOwned {
         Ipv4PacketOwned {
-            header: self.header,
-            data: self.data.to_vec(),
+            data: PacketBuffer::new(self.data.to_vec()),
+        }
+    }
+}
+
+impl<'a> Ipv4PacketMut<'a> {
+    /// Creates a new Ipv4Packet that can mutate the underlying data
+    pub fn new(data: &'a mut [u8]) -> Result<Self, ProtocolError> {
+        Ok(Self { data })
+    }
+
+    /// Takes ownership of the underlying data
+    ///
+    /// NOTE: this function will allocate a new vector and copy the data in the packet
+    /// to the newly allocated space
+    pub fn to_owned(self) -> Ipv4PacketOwned {
+        Ipv4PacketOwned {
+            data: PacketBuffer::new(self.data.to_vec()),
         }
     }
 }
 
 impl Ipv4PacketOwned {
-    pub fn new<T: Into<Vec<u8>>>(data: T) -> Result<Self, ProtocolError> {
+    pub fn new<T: Into<PacketBuffer>>(data: T) -> Result<Self, ProtocolError> {
         let data = data.into();
-        let header = Ipv4Header::extract_from_slice(&data)?;
-        Ok(Self { header, data })
+        Ok(Self { data })
     }
 
     /// Appends data to the end of this packet (useful for fragmented packets)
@@ -389,53 +392,68 @@ impl Ipv4PacketOwned {
 
         if uoffset == end {
             self.data.extend_from_slice(&payload);
-            self.header.length += payload.len() as u16;
+            let len = self.len() + (payload.len() as u16);
+            self.set_length(len);
         } else if uoffset > end {
             // need to pad the data until we reach the offset?
             self.data.reserve(uoffset);
             self.data.extend_from_slice(&payload);
-            self.header.length = offset + (payload.len() as u16);
+            let len = offset + (payload.len() as u16);
+            self.set_length(len);
         } else {
             let end = uoffset + payload.len();
             self.data[uoffset..end].copy_from_slice(&payload);
         }
     }
 
+    /// Returns an immutable reference to the packet data
+    pub fn as_ref(&self) -> Ipv4PacketRef<'_> {
+        Ipv4PacketRef { data: &self.data }
+    }
+
     /// Returns a mutable reference to the packet data
-    pub fn as_ref(&mut self) -> Ipv4PacketRef<'_> {
-        Ipv4PacketRef {
-            header: self.header,
+    pub fn as_mut(&mut self) -> Ipv4PacketMut<'_> {
+        Ipv4PacketMut {
             data: &mut self.data,
         }
     }
 
-    /// Consumes the packet, returning the underlying byte buffer
-    pub fn into_vec(self) -> Vec<u8> {
+    /// Returns the amount of allocated data in the underlying vector
+    pub fn capacity(&self) -> usize {
+        self.data.capacity()
+    }
+
+    /// Consumes this IPv4 packet, returning the underlying packet buffer
+    pub fn consume(self) -> PacketBuffer {
         self.data
     }
 }
 
 impl Ipv4Packet for Ipv4PacketOwned {
-    fn header(&self) -> Ipv4Header {
-        self.header
-    }
     fn as_bytes(&self) -> &[u8] {
         &self.data
     }
+}
 
+impl<'a> Ipv4Packet for Ipv4PacketRef<'a> {
+    fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl<'a> Ipv4Packet for Ipv4PacketMut<'a> {
+    fn as_bytes(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl MutableIpv4Packet for Ipv4PacketOwned {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.data
     }
 }
 
-impl<'a> Ipv4Packet for Ipv4PacketRef<'a> {
-    fn header(&self) -> Ipv4Header {
-        self.header
-    }
-    fn as_bytes(&self) -> &[u8] {
-        &self.data
-    }
-
+impl<'a> MutableIpv4Packet for Ipv4PacketMut<'a> {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.data
     }
@@ -453,13 +471,19 @@ impl<'a> AsRef<[u8]> for Ipv4PacketRef<'a> {
     }
 }
 
+impl<'a> AsRef<[u8]> for Ipv4PacketMut<'a> {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
 impl AsMut<[u8]> for Ipv4PacketOwned {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.data
     }
 }
 
-impl<'a> AsMut<[u8]> for Ipv4PacketRef<'a> {
+impl<'a> AsMut<[u8]> for Ipv4PacketMut<'a> {
     fn as_mut(&mut self) -> &mut [u8] {
         &mut self.data
     }
@@ -477,7 +501,7 @@ mod tests {
 
     use crate::ipv4::Ipv4Flags;
 
-    use super::{Ipv4Packet, Ipv4PacketOwned};
+    use super::{Ipv4Packet, Ipv4PacketOwned, MutableIpv4Packet};
 
     fn init_tracing() {
         tracing_subscriber::FmtSubscriber::builder()
@@ -494,7 +518,7 @@ mod tests {
         fd.read_to_end(&mut data).unwrap();
 
         let pkt = Ipv4PacketOwned::new(data).unwrap();
-        tracing::debug!("ipv4 packet id: 0x{:04x}", pkt.header.id);
+        tracing::debug!("ipv4 packet id: 0x{:04x}", pkt.id());
         pkt
     }
 

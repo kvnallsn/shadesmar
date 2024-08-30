@@ -7,8 +7,9 @@ use std::{
     os::fd::{FromRawFd, RawFd},
 };
 
+use anyhow::Context;
 use nix::unistd;
-use shadesmar_core::Switch;
+use shadesmar_core::{types::buffers::PacketBufferPool, Switch};
 use virtio_queue::{Queue, QueueOwnedT, QueueT};
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
 
@@ -171,27 +172,19 @@ impl<S: Switch> VirtQueue<S> {
             Some(mem) => mem,
         };
 
-        let mut buffer = [0u8; 4096];
         let chains = self.queue.iter(mem.deref())?.collect::<Vec<_>>();
         for (idx, chain) in chains.into_iter().enumerate() {
-            let mut pkt = Vec::new();
+            let mut pkt = PacketBufferPool::get();
             let head_idx = chain.head_index();
             tracing::trace!("[queue] reading from descriptor chain: {}", head_idx);
 
             let mut reader = chain.reader(mem.deref())?;
-            loop {
-                let sz = reader.read(&mut buffer)?;
-                pkt.extend_from_slice(&buffer[..sz]);
-                if sz < buffer.len() {
-                    break;
-                }
-            }
+            reader.read_to_end(&mut pkt)?;
 
-            let (hdr, pkt) = VirtioNetHeader::extract(pkt)?;
+            let hdr = VirtioNetHeader::extract(&mut pkt)?;
             let len = pkt.len();
-            tracing::trace!(slot = %head_idx, %idx, "[kick-tx] read {} bytes", len);
+            tracing::trace!(slot = %head_idx, %idx, "[kick-tx] read {} bytes (cap: {})", len, pkt.capacity());
             tracing::trace!(?idx, "[kick-tx] header: {hdr:02x?}");
-            tracing::trace!(?idx, "[kick-tx] data: {pkt:02x?}");
 
             self.switch.process(switch_port, pkt).unwrap();
 
@@ -205,11 +198,11 @@ impl<S: Switch> VirtQueue<S> {
     }
 
     /// Writes data into the receive queues
-    pub fn kick_rx(&mut self, pkt: &[u8]) -> AppResult<()> {
+    pub fn kick_rx(&mut self, pkt: &[u8]) -> anyhow::Result<()> {
         let enabled = crate::cast!(u64, pkt[0..8]);
         if enabled == 0 {
             tracing::warn!(fd = ?self.kick_fd, "virtqueue not enabled, ignore kick");
-            return Err(Error::QueueDisabled);
+            return Err(Error::QueueDisabled)?;
         }
 
         // check if we have waiting messages to send?
@@ -219,7 +212,7 @@ impl<S: Switch> VirtQueue<S> {
     }
 
     /// Writes data into the receive queues
-    pub fn handle_rx_queued(&mut self) -> AppResult<()> {
+    pub fn handle_rx_queued(&mut self) -> anyhow::Result<()> {
         let mut pending = self.pending.lock();
         if pending.is_empty() {
             return Ok(());
@@ -254,7 +247,9 @@ impl<S: Switch> VirtQueue<S> {
 
             let head_idx = chain.head_index();
             tracing::trace!("[queue] writing to descriptor chain: {}", head_idx);
-            let mut writer = chain.writer(mem.deref())?;
+            let mut writer = chain
+                .writer(mem.deref())
+                .context("unable to get virtqueue chain writer")?;
 
             let vhdr = VirtioNetHeader::new().as_bytes();
             let frame = pkt.frame.to_bytes();
@@ -263,18 +258,31 @@ impl<S: Switch> VirtQueue<S> {
             // the GuestMemory writer.  When tried, it only write the first buffer, which
             // appears to be the default behavior for the Write trait
             let sz = vhdr.len() + frame.len() + pkt.payload.len();
-            writer.write_all(&vhdr)?;
-            writer.write_all(&frame)?;
-            writer.write_all(&pkt.payload)?;
             tracing::trace!(slot = %head_idx, "[kick-rx] write {sz} bytes");
             tracing::trace!("[queue] frame:  {:02x?}", frame);
             tracing::trace!("[queue] packet: {:02x?}", &pkt.payload);
 
-            self.queue.add_used(mem.deref(), head_idx, sz as u32)?;
+            writer
+                .write_all(&vhdr)
+                .context("unable to write vhost header")?;
+            writer
+                .write_all(&frame)
+                .context("unable to write ethernet (L2) frame")?;
+            writer.write_all(&pkt.payload).with_context(|| {
+                format!(
+                    "unable to write packet payload ({} bytes)",
+                    pkt.payload.len()
+                )
+            })?;
+
+            self.queue
+                .add_used(mem.deref(), head_idx, sz as u32)
+                .context("queue add_used failed")?;
         }
 
         // notify client
-        self.call(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])?;
+        self.call(&[0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+            .context("failed to notify client")?;
 
         Ok(())
     }

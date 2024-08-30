@@ -122,7 +122,8 @@ impl DhcpServer {
     /// ### Arguments
     /// * `msg` - DHCPDISCOVER message
     pub fn handle_discover(&self, msg: v4::Message) -> Result<v4::Message, ProtocolError> {
-        tracing::trace!("[dhcp] handling discover message");
+        let _span = tracing::info_span!("handle dhcp discover message").entered();
+
         let ip = match self.lease_ip(&msg) {
             Some(ip) => ip,
             None => {
@@ -140,7 +141,7 @@ impl DhcpServer {
     /// ### Arguments
     /// * `msg` - DHCPREQUEST message
     pub fn handle_request(&self, msg: v4::Message) -> Result<v4::Message, ProtocolError> {
-        tracing::trace!("[dhcp] handling request message");
+        let _span = tracing::info_span!("handle dhcp request message").entered();
 
         let ip = match self.lease_ip(&msg) {
             Some(ip) => ip,
@@ -204,7 +205,8 @@ impl PortHandler for DhcpServer {
     }
 
     fn handle_port(&self, data: &[u8], buf: &mut [u8]) -> Result<usize, ProtocolError> {
-        tracing::trace!("[dhcp] got packet");
+        let _span = tracing::info_span!("handle dhcp packet");
+
         let msg = v4::Message::decode(&mut Decoder::new(data))
             .map_err(|e| ProtocolError::Other(e.to_string()))?;
 

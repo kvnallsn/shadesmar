@@ -1,6 +1,10 @@
 //! ICMP related structures
 
-use crate::{checksum, Ipv4Header, ProtocolError};
+use crate::{
+    checksum,
+    ipv4::{Ipv4Packet, Ipv4PacketOwned},
+    ProtocolError,
+};
 
 pub const ICMP_HDR_SZ: usize = 4;
 pub const ICMP_TY_ECHO_REPLY: u8 = 0;
@@ -88,11 +92,11 @@ impl IcmpPacket {
 
     pub fn destination_unreachable(
         code: DestinationUnreachableCode,
-        hdr: &Ipv4Header,
+        pkt: &Ipv4PacketOwned,
         payload: &[u8],
     ) -> Self {
         let mut buf = [0u8; 28];
-        hdr.as_bytes(&mut buf);
+        buf[0..20].copy_from_slice(pkt.header_bytes());
         buf[20..28].copy_from_slice(&payload[0..8]);
         Self {
             ty: IcmpType::DestinationUnreachable(code, buf),

@@ -3,7 +3,7 @@
 mod icmp;
 mod udp;
 
-use shadesmar_core::{Ipv4PacketOwned, ProtocolError};
+use shadesmar_core::{ipv4::Ipv4PacketOwned, ProtocolError};
 
 pub use self::{icmp::IcmpHandler, udp::UdpHandler};
 

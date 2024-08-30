@@ -18,8 +18,8 @@ use std::{
 use mio::net::UnixDatagram;
 use parking_lot::RwLock;
 use shadesmar_core::{
+    ipv4::Ipv4Packet,
     plugins::{WanDevice, WanInstance, WanPlugin, WanPlugins},
-    Ipv4Packet,
 };
 use uuid::Uuid;
 

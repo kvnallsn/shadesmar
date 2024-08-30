@@ -8,6 +8,7 @@ use std::{
     usize,
 };
 
+use anyhow::Context;
 use mio::{net::UnixStream, unix::SourceFd, Events, Interest, Poll, Token, Waker};
 use nix::{
     errno::Errno,
@@ -18,7 +19,9 @@ use nix::{
     unistd,
 };
 use parking_lot::lock_api::Mutex;
-use shadesmar_core::{EthernetFrame, EthernetPacket, Switch, SwitchPort};
+use shadesmar_core::{
+    types::buffers::PacketBuffer, EthernetFrame, EthernetPacket, Switch, SwitchPort,
+};
 use vm_memory::{GuestAddress, GuestMemoryAtomic, GuestMemoryMmap, GuestRegionMmap, MmapRegion};
 
 use crate::{
@@ -180,7 +183,7 @@ pub struct VirtioDevice<S> {
     router_port: usize,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct VirtioDeviceRxQueue {
     queue: DeviceRxQueue,
     waker: Arc<Waker>,
@@ -215,7 +218,7 @@ impl SwitchPort for VirtioDeviceRxQueue {
     ///
     /// ### Arguments
     /// * `pkt` - Packet to send to the device
-    fn enqueue(&self, frame: EthernetFrame, pkt: Vec<u8>) {
+    fn enqueue(&self, frame: EthernetFrame, pkt: PacketBuffer) {
         let mut queue = self.queue.lock();
         queue.push_back(EthernetPacket::new(frame, pkt));
         drop(queue);
@@ -265,13 +268,13 @@ impl<S: Switch + 'static> VirtioDevice<S> {
             .name(String::from("vhost-user-device"))
             .spawn(move || {
                 if let Err(error) = self.run(strm) {
-                    tracing::warn!(?error, "unable to run device thread");
+                    tracing::warn!("unable to run device thread: {error:?}");
                 }
             })?;
         Ok(())
     }
 
-    pub fn run(mut self, mut strm: UnixStream) -> AppResult<()> {
+    pub fn run(mut self, mut strm: UnixStream) -> anyhow::Result<()> {
         self.poll
             .registry()
             .register(&mut strm, TOKEN_STRM, Interest::READABLE)?;
@@ -279,7 +282,7 @@ impl<S: Switch + 'static> VirtioDevice<S> {
         let mut buffer = [0u8; 4096];
         let mut events = Events::with_capacity(1024);
         loop {
-            self.poll.poll(&mut events, None)?;
+            self.poll.poll(&mut events, None).context("poll failed")?;
 
             for event in &events {
                 match event.token() {
@@ -292,33 +295,47 @@ impl<S: Switch + 'static> VirtioDevice<S> {
                                     // no more data, stop the loop
                                     break 'read;
                                 }
-                                Err(e) => Err(e)?,
+                                Err(e) => Err(e).context("unable to read unix control stream")?,
                             }
                         }
                     }
                     TOKEN_WAKE => {
-                        let vq = self.get_virtqueue_mut(0)?;
-                        vq.handle_rx_queued()?;
+                        let vq = self
+                            .get_virtqueue_mut(0)
+                            .context("virtqueue 0 missing (rx)")?;
+
+                        vq.handle_rx_queued()
+                            .context("unable to handle queued packets (world -> vm)")?;
                     }
                     token => match self.kick_fds.get(&token) {
                         Some(KickFd::Rx(fd, vq)) => {
-                            let sz = unistd::read(*fd, &mut buffer)?;
+                            let sz = unistd::read(*fd, &mut buffer)
+                                .context("unable to read from kickfd_rx")?;
+
                             let pkt = &buffer[..sz];
                             tracing::trace!(sz, "[vq][{vq:02x}] read from driver (rx)");
                             tracing::trace!("[vq][{vq:02x}] data: {pkt:x?}");
 
-                            let vq = self.get_virtqueue_mut(*vq)?;
-                            vq.kick_rx(&pkt)?;
+                            let vq = self
+                                .get_virtqueue_mut(*vq)
+                                .context("virtqueue missing (kickfd)")?;
+
+                            vq.kick_rx(&pkt).context("kick_rx failed")?;
                         }
                         Some(KickFd::Tx(fd, vq)) => {
-                            let sz = unistd::read(*fd, &mut buffer)?;
+                            let sz = unistd::read(*fd, &mut buffer)
+                                .context("unable to read from kickfd_tx")?;
+
                             let pkt = &buffer[..sz];
                             tracing::trace!(sz, "[vq][{vq:02x}] read from driver (tx)");
                             tracing::trace!("[vq][{vq:02x}] data: {pkt:x?}");
 
                             let port = self.router_port;
-                            let vq = self.get_virtqueue_mut(*vq)?;
-                            vq.kick_tx(&pkt, port)?;
+                            let vq = self
+                                .get_virtqueue_mut(*vq)
+                                .context("virtqueue missing (kickfd)")?;
+
+                            vq.kick_tx(&pkt, port).context("kick_tx failed")?;
                         }
                         None => tracing::trace!(?token, "[device] unknown mio token"),
                     },

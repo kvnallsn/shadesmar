@@ -12,7 +12,10 @@ use std::{
 use parking_lot::RwLock;
 
 use serde::{Deserialize, Serialize};
-use shadesmar_core::{types::MacAddress, EthernetFrame, ProtocolError, Switch, SwitchPort};
+use shadesmar_core::{
+    types::{buffers::PacketBuffer, MacAddress},
+    EthernetFrame, ProtocolError, Switch, SwitchPort,
+};
 
 use super::{pcap::PcapLogger, NetworkError, ETHERNET_HDR_SZ};
 
@@ -150,7 +153,9 @@ impl Switch for VirtioSwitch {
     /// ### Arguments
     /// * `port` - Port id this packet was sent from
     /// * `pkt` - Ethernet Framed packet (Layer 2)
-    fn process(&self, port: usize, mut pkt: Vec<u8>) -> Result<(), ProtocolError> {
+    fn process(&self, port: usize, mut pkt: PacketBuffer) -> Result<(), ProtocolError> {
+        let _span = tracing::info_span!("process switch packet").entered();
+
         self.pkt_stats
             .fetch_add(pkt.len() as u64, Ordering::Relaxed);
 
@@ -177,7 +182,7 @@ impl Switch for VirtioSwitch {
                 "[switch] got broadcast message, writing to all ports"
             );
             for (_, dev) in ports.iter().enumerate().filter(|(idx, _)| *idx != port) {
-                dev.enqueue(frame, pkt.clone());
+                dev.enqueue(frame, PacketBuffer::clone(&pkt));
             }
         } else {
             match self.get_port(frame.dst) {

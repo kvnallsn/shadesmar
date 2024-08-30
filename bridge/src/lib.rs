@@ -21,7 +21,7 @@ use nix::{
     unistd::Pid,
 };
 use serde::{Deserialize, Serialize};
-use shadesmar_core::plugins::WanPlugins;
+use shadesmar_core::{plugins::WanPlugins, types::buffers::PacketBufferPool};
 use shadesmar_vhost::{DeviceOpts, VHostSocket};
 
 pub use self::config::Config as BridgeConfig;
@@ -99,6 +99,9 @@ impl BridgeBuilder {
         let name = name.into();
         let span = tracing::info_span!("create network", name = name);
         let _enter = span.enter();
+
+        tracing::debug!("initializing packet buffers");
+        PacketBufferPool::load();
 
         tracing::info!("configuring {name} network");
 
@@ -350,6 +353,10 @@ impl Bridge {
         router.stop()?;
         pcap_logger.stop();
         tracing::info!(bridge = %self, "bridge stopped");
+        tracing::debug!(
+            "final packetbuffer pool count: {}",
+            PacketBufferPool::available()
+        );
 
         Ok(())
     }
@@ -366,7 +373,7 @@ impl Bridge {
         };
 
         for msg in msgs {
-            tracing::debug!(message = ?msg, "received control message");
+            tracing::trace!(message = ?msg, "received control message");
             match msg {
                 CtrlRequest::Stop => {
                     strm.send(CtrlResponse::ok())?;

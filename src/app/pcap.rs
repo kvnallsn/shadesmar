@@ -7,12 +7,12 @@ use mio::net::UnixDatagram;
 use nix::sys::signal::Signal;
 use serde::{Deserialize, Serialize};
 use shadesmar_core::{
+    ipv4::{Ipv4Packet, Ipv4PacketRef},
     protocols::{
         tcp::TcpHeader, udp::UdpHeader, ArpPacket, NET_PROTOCOL_ICMP, NET_PROTOCOL_TCP,
         NET_PROTOCOL_UDP,
     },
     types::MacAddress,
-    Ipv4Header,
 };
 
 use crate::os::Poller;
@@ -160,7 +160,7 @@ pub fn handle_pcap<P: AsRef<Path>>(tap: P) -> anyhow::Result<()> {
 }
 
 fn handle_pcap_read(tap: &mut UnixDatagram, buf: &mut [u8]) -> anyhow::Result<()> {
-    // tap is a non-blocking socket, read unti EWOULDBLOCK
+    // tap is a non-blocking socket, read until EWOULDBLOCK
     loop {
         let (sz, _peer) = match tap.recv_from(buf) {
             Ok((sz, peer)) => (sz, peer),
@@ -189,13 +189,13 @@ fn handle_pcap_read(tap: &mut UnixDatagram, buf: &mut [u8]) -> anyhow::Result<()
 }
 
 fn handle_pcap_ipv4(data: &[u8]) -> anyhow::Result<()> {
-    let ipv4 = Ipv4Header::extract_from_slice(data)?;
+    let ipv4 = Ipv4PacketRef::new(data)?;
 
     // extract dst/src ip address
-    let src_ip = Ipv4Addr::from([data[12], data[13], data[14], data[15]]);
-    let dst_ip = Ipv4Addr::from([data[16], data[17], data[18], data[19]]);
-    let protocol = data[9];
-    let length = u16::from_be_bytes([data[2], data[3]]);
+    let src_ip = ipv4.src();
+    let dst_ip = ipv4.dst();
+    let protocol = ipv4.protocol();
+    let length = ipv4.len();
     let start = ipv4.header_length();
 
     match protocol {
@@ -209,8 +209,8 @@ fn handle_pcap_ipv4(data: &[u8]) -> anyhow::Result<()> {
                 "ipv4/tcp",
                 length,
                 format!(
-                    "[{}] {}:{} --> {}:{}",
-                    tcp.flags, ipv4.src, tcp.src_port, ipv4.dst, tcp.dst_port
+                    "[{}] {src_ip}:{} --> {dst_ip}:{}",
+                    tcp.flags, tcp.src_port, tcp.dst_port
                 )
             );
         }
@@ -220,10 +220,7 @@ fn handle_pcap_ipv4(data: &[u8]) -> anyhow::Result<()> {
             print_netflow!(
                 "ipv4/udp",
                 length,
-                format!(
-                    "{}:{} --> {}:{}",
-                    ipv4.src, udp.src_port, ipv4.dst, udp.dst_port
-                )
+                format!("{src_ip}:{} --> {dst_ip}:{}", udp.src_port, udp.dst_port)
             );
         }
         NET_PROTOCOL_ICMP => {

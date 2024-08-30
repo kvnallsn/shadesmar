@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = { workspace = true }
 bitflags = "2.5.0"
 mio = { workspace = true }
 nix = { workspace = true }

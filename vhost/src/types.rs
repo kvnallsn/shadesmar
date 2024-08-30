@@ -387,7 +387,7 @@ impl VirtioNetHeader {
         }
     }
 
-    pub fn extract(mut pkt: Vec<u8>) -> Result<(Self, Vec<u8>), PayloadError> {
+    pub fn extract(pkt: &mut Vec<u8>) -> Result<Self, PayloadError> {
         if pkt.len() < VIRTIO_NET_HDR_SZ {
             return Err(PayloadError::NotEnoughData(pkt.len(), VIRTIO_NET_HDR_SZ));
         }
@@ -413,7 +413,7 @@ impl VirtioNetHeader {
             num_buffers,
         };
 
-        Ok((hdr, pkt))
+        Ok(hdr)
     }
 
     pub fn as_bytes(&self) -> [u8; VIRTIO_NET_HDR_SZ] {

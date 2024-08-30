@@ -5,6 +5,7 @@ pub mod table;
 
 use std::{
     collections::{BTreeMap, HashMap},
+    fmt::Display,
     io::IoSliceMut,
     net::IpAddr,
     os::unix::io::AsRawFd,
@@ -19,10 +20,14 @@ use nix::sys::socket::{MsgFlags, RecvMsg, UnixAddr};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use shadesmar_core::{
+    ipv4::{Ipv4Flags, Ipv4Packet, Ipv4PacketOwned},
     plugins::WanPlugins,
     protocols::ArpPacket,
-    types::{EtherType, Ipv4Network, MacAddress},
-    EthernetFrame, EthernetPacket, Ipv4Packet, Ipv4PacketOwned, ProtocolError, Switch, SwitchPort,
+    types::{
+        buffers::{PacketBuffer, PacketBufferPool},
+        EtherType, Ipv4Network, MacAddress,
+    },
+    EthernetFrame, EthernetPacket, ProtocolError, Switch, SwitchPort,
 };
 use table::{ArcRouteTable, RouteTable};
 use uuid::Uuid;
@@ -57,13 +62,13 @@ pub enum RouterMsg {
 /// The action a router will take after processing a packet
 pub enum RouterAction {
     /// Queues a packet to be sent over a LAN port to a local device
-    ToLan(EtherType, IpAddr, Vec<u8>),
+    ToLan(EtherType, IpAddr, PacketBuffer),
 
     /// Queues a packet to be send over the WAN port
     ToWan(Ipv4PacketOwned),
 
     /// Drops / ignores the packet (no response generated)
-    Drop(Vec<u8>),
+    Drop(Option<PacketBuffer>),
 }
 
 /// Provides means to send packets to be handle/routed by the router
@@ -413,6 +418,9 @@ impl Router {
     /// * `ethertype` - What type of data is contained in the packet
     /// * `pkt` - Packet data (based on ethertype)
     fn route(&self, pkt: EthernetPacket) -> Result<(), ProtocolError> {
+        let _span =
+            tracing::info_span!("route frame", len = pkt.len(), cap = pkt.capacity()).entered();
+
         let action = match pkt.frame.ethertype {
             EtherType::ARP => self.handle_arp(pkt.payload),
             EtherType::IPv4 => {
@@ -435,12 +443,14 @@ impl Router {
         action: RouterAction,
         dst: Option<MacAddress>,
     ) -> Result<(), ProtocolError> {
+        let _span = tracing::info_span!("handle router action", action = %action).entered();
+
         match action {
             RouterAction::ToLan(ethertype, dst_ip, pkt) => {
                 let dst = dst.or_else(|| self.arp.read().get(&dst_ip).copied());
 
                 match dst {
-                    Some(dst) => self.write_to_switch(dst, ethertype, &pkt),
+                    Some(dst) => self.write_to_switch(dst, ethertype, pkt),
                     None => {
                         tracing::warn!(ip = ?dst_ip, "[router] mac not found in arp cache, dropping packet")
                     }
@@ -477,8 +487,9 @@ impl Router {
     ///
     /// ### Arguments
     /// * `pkt` - Byte buffer containing the ARP packet starting at index 0
-    fn handle_arp(&self, pkt: Vec<u8>) -> Result<RouterAction, ProtocolError> {
-        tracing::trace!("handling arp packet");
+    fn handle_arp(&self, pkt: PacketBuffer) -> Result<RouterAction, ProtocolError> {
+        let _span = tracing::info_span!("handle arp packet").entered();
+
         let mut arp = ArpPacket::parse(&pkt)?;
 
         tracing::trace!(
@@ -490,13 +501,13 @@ impl Router {
 
         if self.is_local(arp.tpa) || self.is_global_broadcast(arp.tpa) {
             // responsd with router's mac
-            let mut rpkt = vec![0u8; arp.size()];
+            let mut rpkt = PacketBufferPool::with_size(arp.size());
             arp.to_reply(self.mac);
             arp.as_bytes(&mut rpkt);
             Ok(RouterAction::ToLan(EtherType::ARP, arp.tpa, rpkt))
         } else {
             // Not for us..ignore the packet
-            Ok(RouterAction::Drop(pkt))
+            Ok(RouterAction::Drop(Some(pkt)))
         }
     }
 
@@ -537,6 +548,9 @@ impl Router {
     /// ### Arguments
     /// * `pkt` - The IPv4 packet received by the router
     fn route_ip4(&self, pkt: Ipv4PacketOwned) -> Result<RouterAction, ProtocolError> {
+        let _span =
+            tracing::info_span!("route ipv4", len = pkt.len(), cap = pkt.capacity()).entered();
+
         match self.network.contains(pkt.dst()) || pkt.dst().is_broadcast() {
             true => match self.is_local(pkt.dst()) || pkt.dst().is_broadcast() {
                 true => Ok(self.handle_local_ipv4(pkt)),
@@ -545,7 +559,7 @@ impl Router {
                     Ok(RouterAction::ToLan(
                         EtherType::IPv4,
                         IpAddr::V4(dst),
-                        pkt.into_vec(),
+                        pkt.consume(),
                     ))
                 }
             },
@@ -559,9 +573,9 @@ impl Router {
     ///
     /// ### Arguments
     /// * `pkt` -  The (unsupported) IPv6 packet
-    fn route_ip6(&self, pkt: Vec<u8>) -> Result<RouterAction, ProtocolError> {
+    fn route_ip6(&self, pkt: PacketBuffer) -> Result<RouterAction, ProtocolError> {
         tracing::debug!("ipv6 not supported, dropping packet");
-        Ok(RouterAction::Drop(pkt))
+        Ok(RouterAction::Drop(Some(pkt)))
     }
 
     /// Handles an IPv4 packet with a destination IP of this router
@@ -574,20 +588,25 @@ impl Router {
     /// ### Arguments
     /// * `pkt` - The IPv4 packet received over the wire/air/string
     fn handle_local_ipv4(&self, pkt: Ipv4PacketOwned) -> RouterAction {
-        let mut rpkt = vec![0u8; 1560];
+        let _span = tracing::info_span!("handle local ipv4 packet").entered();
+
+        let mut rpkt = PacketBufferPool::with_size(1600);
 
         match self.ip4_handlers.get(&pkt.protocol()) {
             Some(ref mut handler) => {
                 match handler.handle_protocol(&pkt, &mut rpkt[IPV4_HDR_SZ..]) {
-                    Ok(0) => RouterAction::Drop(Vec::new()),
+                    Ok(0) => RouterAction::Drop(Some(pkt.consume())),
                     Ok(sz) => {
                         rpkt.truncate(IPV4_HDR_SZ + sz);
 
                         // build response ipv4 header
-                        let hdr = pkt.gen_response_header(&rpkt[IPV4_HDR_SZ..]);
-                        hdr.as_bytes(&mut rpkt[0..IPV4_HDR_SZ]);
-
-                        RouterAction::ToLan(EtherType::IPv4, hdr.dst.into(), rpkt)
+                        match pkt.gen_response_header(Ipv4Flags::empty(), &mut rpkt) {
+                            Ok(dst) => RouterAction::ToLan(EtherType::IPv4, dst.into(), rpkt),
+                            Err(error) => {
+                                tracing::warn!("packet requires fragmentation but fragmention not supported: {error}");
+                                RouterAction::Drop(Some(pkt.consume()))
+                            }
+                        }
                     }
                     Err(error) => {
                         tracing::warn!(
@@ -595,11 +614,11 @@ impl Router {
                             protocol = pkt.protocol(),
                             "unable to handle packet"
                         );
-                        RouterAction::Drop(Vec::new())
+                        RouterAction::Drop(Some(pkt.consume()))
                     }
                 }
             }
-            None => RouterAction::Drop(vec![]),
+            None => RouterAction::Drop(None),
         }
     }
 
@@ -609,16 +628,16 @@ impl Router {
     /// * `dst` - Destination MAC address
     /// * `ethertype` - Type of packet to write (i.e., 0x0800 (IPv4), 0x0806 (ARP))
     /// * `pkt` - Layer 3 (i.e., IP) packet contents / data
-    fn write_to_switch(&self, dst: MacAddress, ethertype: EtherType, pkt: &[u8]) {
-        let pkt_len: usize = pkt.len().into();
+    fn write_to_switch(&self, dst: MacAddress, ethertype: EtherType, pkt: PacketBuffer) {
+        //let pkt_len: usize = pkt.len().into();
 
-        let mut data = Vec::with_capacity(14 + pkt_len);
+        let mut data = PacketBufferPool::get();
         data.extend_from_slice(&dst.as_bytes());
         data.extend_from_slice(&self.mac.as_bytes());
         data.extend_from_slice(&ethertype.as_u16().to_be_bytes());
-        data.extend_from_slice(pkt);
+        data.extend_from_slice(&pkt);
 
-        tracing::trace!("[router] write to switch: {:02x?}", &data[14..34]);
+        tracing::trace!("[router] write to switch: {:02x?}", &data[..]);
 
         if let Err(error) = self.switch.process(self.port, data) {
             tracing::warn!(?error, "unable to write to switch");
@@ -754,7 +773,7 @@ impl SwitchPort for RouterTx {
         "router"
     }
 
-    fn enqueue(&self, frame: EthernetFrame, pkt: Vec<u8>) {
+    fn enqueue(&self, frame: EthernetFrame, pkt: PacketBuffer) {
         tracing::trace!("sending ethernet frame to router");
         let pkt = EthernetPacket::new(frame, pkt);
 
@@ -766,6 +785,18 @@ impl SwitchPort for RouterTx {
         {
             tracing::warn!("unable to queue packet to router: {error}");
         }
+    }
+}
+
+impl Display for RouterAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match &self {
+            Self::Drop(_) => "drop",
+            Self::ToLan(_, _, _) => "to lan",
+            Self::ToWan(_) => "to wan",
+        };
+
+        write!(f, "{s}")
     }
 }
 

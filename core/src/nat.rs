@@ -4,8 +4,8 @@ use std::{collections::HashMap, net::Ipv4Addr};
 
 use crate::{
     cast,
+    ipv4::Ipv4Packet,
     protocols::{NET_PROTOCOL_ICMP, NET_PROTOCOL_TCP, NET_PROTOCOL_UDP},
-    Ipv4Packet,
 };
 
 /// Network Address Translation (NAT) table

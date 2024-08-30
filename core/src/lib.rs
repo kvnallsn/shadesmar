@@ -1,5 +1,5 @@
 mod frame;
-mod ipv4;
+pub mod ipv4;
 mod macros;
 pub mod nat;
 pub mod plugins;
@@ -8,10 +8,9 @@ pub mod types;
 
 use std::net::Ipv4Addr;
 
-pub use self::{
-    frame::{EthernetFrame, EthernetPacket},
-    ipv4::{Ipv4Header, Ipv4Packet, Ipv4PacketOwned, Ipv4PacketRef},
-};
+use types::buffers::PacketBuffer;
+
+pub use self::frame::{EthernetFrame, EthernetPacket};
 
 /// Initializes the logging / tracing library
 pub fn init_tracinig(level: u8) {
@@ -36,6 +35,9 @@ pub enum ProtocolError {
     #[error("malformed packet: {0}")]
     MalformedPacket(String),
 
+    #[error("packet fragmentation required. size = {0}")]
+    FragmentationRequired(usize),
+
     #[error("{0}")]
     Other(String),
 }
@@ -45,7 +47,7 @@ pub trait Switch: Clone + Send + Sync {
     fn connect<P: SwitchPort + 'static>(&self, port: P) -> usize;
 
     /// Process a packet, sending it to the correct device
-    fn process(&self, port: usize, pkt: Vec<u8>) -> Result<(), ProtocolError>;
+    fn process(&self, port: usize, pkt: PacketBuffer) -> Result<(), ProtocolError>;
 }
 
 /// A `SwitchPort` represents a device that can be connected to a switch
@@ -58,7 +60,7 @@ pub trait SwitchPort: Send + Sync {
     /// ### Arguments
     /// * `frame` - Ethernet frame header
     /// * `pkt` - Ethernet frame payload
-    fn enqueue(&self, frame: EthernetFrame, pkt: Vec<u8>);
+    fn enqueue(&self, frame: EthernetFrame, pkt: PacketBuffer);
 }
 
 /// Computes the checksum used in various networking protocols

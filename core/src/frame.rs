@@ -1,7 +1,7 @@
 //! Ethernet Frame
 
 use crate::{
-    types::{EtherType, MacAddress},
+    types::{buffers::PacketBuffer, EtherType, MacAddress},
     ProtocolError,
 };
 
@@ -15,10 +15,9 @@ pub struct EthernetFrame {
 }
 
 /// An `EthernetPacket` consists of an `EthernetFrame` and its associated payload
-#[derive(Debug)]
 pub struct EthernetPacket {
     pub frame: EthernetFrame,
-    pub payload: Vec<u8>,
+    pub payload: PacketBuffer,
 }
 
 impl EthernetFrame {
@@ -84,7 +83,15 @@ impl EthernetPacket {
     /// ### Arguments
     /// * `frame` - The ethernet frame header
     /// * `payload` - The Layer3+ payload data
-    pub fn new(frame: EthernetFrame, payload: Vec<u8>) -> Self {
+    pub fn new(frame: EthernetFrame, payload: PacketBuffer) -> Self {
         Self { frame, payload }
+    }
+
+    pub fn len(&self) -> usize {
+        self.payload.len()
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.payload.capacity()
     }
 }

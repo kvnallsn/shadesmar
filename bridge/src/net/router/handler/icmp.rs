@@ -2,11 +2,12 @@
 
 use shadesmar_core::{
     checksum,
+    ipv4::{Ipv4Packet, Ipv4PacketOwned},
     protocols::{
         icmp::{ICMP_HDR_SZ, ICMP_TY_ECHO_REPLY, ICMP_TY_ECHO_REQUEST},
         NET_PROTOCOL_ICMP,
     },
-    Ipv4Packet, Ipv4PacketOwned, ProtocolError,
+    ProtocolError,
 };
 
 use super::ProtocolHandler;
