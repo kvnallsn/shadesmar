@@ -16,6 +16,7 @@ use std::{
 };
 
 use mio::net::UnixDatagram;
+use nix::sys::socket::UnixAddr;
 use parking_lot::RwLock;
 use shadesmar_core::{
     ipv4::Ipv4Packet,
@@ -342,6 +343,18 @@ impl WanSocket {
         let sz = sock.send_to(pkt.as_bytes(), &self.path)?;
         self.stats.tx_add(sz as u64);
         Ok(())
+    }
+
+    pub fn addr(&self) -> UnixAddr {
+        UnixAddr::new(&self.path).unwrap()
+    }
+
+    /// Increases the WAN stats tx field by the amount received
+    ///
+    /// ### Arguments
+    /// * `sz` - Amount of data sent
+    pub fn update_tx(&self, sz: u64) {
+        self.stats.tx_add(sz);
     }
 
     /// Increases the WAN stats rx field by the amount received

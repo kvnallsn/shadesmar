@@ -47,6 +47,10 @@ macro_rules! define_wan_plugin {
             };
 
             shadesmar_core::init_tracinig(cfg.log_level);
+
+            // initialize the packet buffer pool (if not already done)
+            shadesmar_core::types::buffers::PacketBufferPool::load();
+
             tracing::info!(
                 "[{}] initialized plugin (log level: {})",
                 $name,

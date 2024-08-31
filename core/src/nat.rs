@@ -83,10 +83,21 @@ impl NatTable {
 
     /// Returns the NAT'd ipv4 address for a packet, if one exists
     pub fn get<P: Ipv4Packet>(&self, pkt: &P) -> Option<Ipv4Addr> {
-        self.get_internal(pkt.protocol(), pkt.src(), pkt.payload())
+        match self.get_entry(pkt.protocol(), pkt.src(), pkt.payload()) {
+            Some(ref entry) => self.table.get(entry).copied(),
+            None => None,
+        }
     }
 
-    fn get_internal(&self, protocol: u8, src: Ipv4Addr, payload: &[u8]) -> Option<Ipv4Addr> {
+    /// Returns the NAT'd ipv4 address for a packet, if one exists and removes it from the table
+    pub fn remove<P: Ipv4Packet>(&mut self, pkt: &P) -> Option<Ipv4Addr> {
+        match self.get_entry(pkt.protocol(), pkt.src(), pkt.payload()) {
+            Some(ref entry) => self.table.remove(entry),
+            None => None,
+        }
+    }
+
+    fn get_entry(&self, protocol: u8, src: Ipv4Addr, payload: &[u8]) -> Option<NatEntry> {
         match protocol {
             NET_PROTOCOL_ICMP => {
                 let id = cast!(be16, &payload[4..6]);
@@ -95,7 +106,8 @@ impl NatTable {
                     %src, %id,
                     "[nat] looking up entry"
                 );
-                self.table.get(&NatEntry::Icmp(src, id)).copied()
+
+                Some(NatEntry::Icmp(src, id))
             }
             NET_PROTOCOL_TCP => {
                 let port = cast!(be16, &payload[2..4]);
@@ -105,7 +117,7 @@ impl NatTable {
                     "[nat] looking up entry"
                 );
 
-                self.table.get(&NatEntry::Tcp(src, port)).copied()
+                Some(NatEntry::Tcp(src, port))
             }
             NET_PROTOCOL_UDP => {
                 let port = cast!(be16, &payload[2..4]);
@@ -114,7 +126,7 @@ impl NatTable {
                     %src, %port,
                     "[nat] looking up entry"
                 );
-                self.table.get(&NatEntry::Udp(src, port)).copied()
+                Some(NatEntry::Udp(src, port))
             }
             _ => None,
         }
