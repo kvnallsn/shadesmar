@@ -5,11 +5,10 @@ pub mod nat;
 pub mod plugins;
 pub mod protocols;
 pub mod queue;
+pub mod switch;
 pub mod types;
 
 use std::net::Ipv4Addr;
-
-use types::buffers::PacketBuffer;
 
 pub use self::frame::{EthernetFrame, EthernetPacket};
 
@@ -41,27 +40,6 @@ pub enum ProtocolError {
 
     #[error("{0}")]
     Other(String),
-}
-
-pub trait Switch: Clone + Send + Sync {
-    /// Returns the port associated with the new switch device
-    fn connect<P: SwitchPort + 'static>(&self, port: P) -> usize;
-
-    /// Process a packet, sending it to the correct device
-    fn process(&self, port: usize, pkt: PacketBuffer) -> Result<(), ProtocolError>;
-}
-
-/// A `SwitchPort` represents a device that can be connected to a switch
-pub trait SwitchPort: Send + Sync {
-    /// Human-friendly description (type) of switch port
-    fn desc(&self) -> &'static str;
-
-    /// Places a packet in the device's receive queue
-    ///
-    /// ### Arguments
-    /// * `frame` - Ethernet frame header
-    /// * `pkt` - Ethernet frame payload
-    fn enqueue(&self, frame: EthernetFrame, pkt: PacketBuffer);
 }
 
 /// Computes the checksum used in various networking protocols

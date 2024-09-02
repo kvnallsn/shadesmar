@@ -13,8 +13,9 @@ use parking_lot::RwLock;
 
 use serde::{Deserialize, Serialize};
 use shadesmar_core::{
+    switch::{Switch, SwitchPort},
     types::{buffers::PacketBuffer, MacAddress},
-    EthernetFrame, ProtocolError, Switch, SwitchPort,
+    EthernetFrame, ProtocolError,
 };
 
 use super::{pcap::PcapLogger, NetworkError, ETHERNET_HDR_SZ};

@@ -20,7 +20,9 @@ use nix::{
 };
 use parking_lot::lock_api::Mutex;
 use shadesmar_core::{
-    types::buffers::PacketBuffer, EthernetFrame, EthernetPacket, Switch, SwitchPort,
+    switch::{Switch, SwitchPort},
+    types::buffers::PacketBuffer,
+    EthernetFrame, EthernetPacket,
 };
 use vm_memory::{GuestAddress, GuestMemoryAtomic, GuestMemoryMmap, GuestRegionMmap, MmapRegion};
 

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 bitflags = { workspace = true }
+flume = { workspace = true }
 libloading = "0.8.5"
 mio = { workspace = true }
 nix = { workspace = true }

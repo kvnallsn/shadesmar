@@ -8,6 +8,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 anyhow = { workspace = true }
+flume = { workspace = true }
 mio = { workspace = true }
 nix = { workspace = true }
 serde = { workspace = true }

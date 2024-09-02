@@ -6,9 +6,8 @@
 //mod wireguard;
 
 use std::{
-    collections::HashMap,
+    ffi::c_void,
     net::Ipv4Addr,
-    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -16,33 +15,18 @@ use std::{
 };
 
 use mio::net::UnixDatagram;
-use nix::sys::socket::UnixAddr;
-use parking_lot::RwLock;
 use shadesmar_core::{
     ipv4::Ipv4Packet,
-    plugins::{WanDevice, WanInstance, WanPlugin, WanPlugins},
+    plugins::{FnCallback, PluginError, WanDevice, WanInstance, WanPlugin},
 };
 use uuid::Uuid;
 
-use crate::config::WanConfig;
+use crate::{config::WanConfig, get_wan_plugins};
 
-use super::NetworkError;
-
-/// Mapping of WAN unique ids to unix datagram socket paths
-pub type WanSocketMap = Arc<RwLock<HashMap<Uuid, WanSocket>>>;
-
-/// A `WanMap` stores all active WAN connections
-#[derive(Default)]
-pub struct WanMap<'a> {
-    /// Map of wan unique ids (uuid) to wan handle
-    devices: HashMap<Uuid, WanHandle<'a>>,
-
-    /// Map of wan unique ids to their respective sockets
-    sockets: WanSocketMap,
-}
+use super::{router::RouterTx, NetworkError};
 
 /// A `WanHandle` provides a method to communicate with a WAN device
-pub struct WanHandle<'a> {
+pub struct WanHandle {
     /// Unique id of WAN device
     id: Uuid,
 
@@ -55,27 +39,21 @@ pub struct WanHandle<'a> {
     /// Flag to check if pcap is enabled on this WAN
     pcap: bool,
 
-    /// Path to the WAN's listening unix (datagram) socket
-    socket: PathBuf,
-
-    /// WAN plugin functions
-    vtable: WanPlugin<'a>,
-
-    /// WAN device (created by vtable)
-    device: WanDevice,
-
-    /// Handle to running instance (if running)
-    instance: Option<WanInstance>,
-
     /// Send/Receive stats
     stats: WanStats,
+
+    /// Table of WAN functions
+    vtable: WanPlugin<'static>,
+
+    /// Device configuration
+    device: WanDevice,
+
+    /// Running WAN device (or None if not running)
+    instance: Option<WanInstance>,
 }
 
 /// Represents a socket that can feed/send packets to a WAN driver/device
 pub struct WanSocket {
-    /// Full path to the WAN's unix datagram socket
-    path: PathBuf,
-
     /// WAN statistics
     stats: WanStats,
 }
@@ -138,72 +116,7 @@ impl WanStats {
     }
 }
 
-impl<'a> WanMap<'a> {
-    /// Adds a new WanHandle into the map
-    ///
-    /// ### Arguments
-    /// * `handle` - WAN handle to insert into the map
-    pub fn insert(&mut self, handle: WanHandle<'a>) {
-        self.sockets.write().insert(
-            handle.id(),
-            WanSocket {
-                path: handle.socket().to_path_buf(),
-                stats: handle.stats(),
-            },
-        );
-
-        self.devices.insert(handle.id(), handle);
-    }
-
-    /// Returns the wan with the corresponding id
-    ///
-    /// ### Arguments
-    /// * `id` - Unique id of the WAN device
-    pub fn get(&self, id: Uuid) -> Option<&WanHandle<'_>> {
-        self.devices.get(&id)
-    }
-
-    /// Returns a new (shared) reference to the WAN socket map
-    pub fn sockets(&self) -> WanSocketMap {
-        Arc::clone(&self.sockets)
-    }
-
-    /// Returns the WAN id corresponding to the provided name, or None if no
-    /// WAN is found
-    ///
-    /// ### Arguments
-    /// * `name` - Name of the WAN device
-    pub fn find_by_name<S: AsRef<str>>(&self, name: S) -> Option<Uuid> {
-        let name = name.as_ref();
-        self.devices
-            .values()
-            .find_map(|handle| match handle.name() == name {
-                true => Some(handle.id()),
-                false => None,
-            })
-    }
-
-    /// Returns an iterator over the WAN devices
-    pub fn iter(&self) -> std::collections::hash_map::Iter<Uuid, WanHandle<'_>> {
-        self.devices.iter()
-    }
-
-    /// Returns a consuming iteartor over the WAN devices
-    pub fn into_iter(self) -> std::collections::hash_map::IntoIter<Uuid, WanHandle<'a>> {
-        self.devices.into_iter()
-    }
-
-    /// Removes a WAN device from the map
-    ///
-    /// ### Arguments
-    /// * `id` - Unique id of WAN device to remove
-    pub fn remove(&mut self, id: Uuid) -> Option<WanHandle<'_>> {
-        self.sockets.write().remove(&id);
-        self.devices.remove(&id)
-    }
-}
-
-impl<'a> WanHandle<'a> {
+impl WanHandle {
     /// Creates a new WAN device
     ///
     /// A WAN device represents a connection to the outside world and
@@ -211,30 +124,21 @@ impl<'a> WanHandle<'a> {
     ///
     /// ### Arguments
     /// * `cfg` - Wan Configuration
-    pub fn new<P: AsRef<Path>>(
-        cfg: WanConfig,
-        rundir: &P,
-        plugins: &'a WanPlugins,
-    ) -> Result<Self, NetworkError> {
+    pub fn new(cfg: WanConfig) -> Result<Self, NetworkError> {
         let wan_type = cfg
             .device
             .get("type")
             .ok_or_else(|| NetworkError::Generic("wan plugin type not specified".into()))?;
 
-        let vtable = plugins.get_vtable(wan_type)?;
-
-        let stats = WanStats::new();
-        let socket = rundir.as_ref().join(&cfg.name).with_extension("sock");
-
+        let vtable = get_wan_plugins()?.get_vtable(wan_type)?;
         let device = vtable.create(cfg.id, &cfg.device)?;
 
         Ok(Self {
             id: cfg.id,
             name: cfg.name,
             ty: wan_type.into(),
-            socket,
             pcap: cfg.pcap,
-            stats,
+            stats: WanStats::new(),
             vtable,
             device,
             instance: None,
@@ -259,11 +163,6 @@ impl<'a> WanHandle<'a> {
     /// Returns true if traffic is being captured on this WAN
     pub fn pcap_enabled(&self) -> bool {
         self.pcap
-    }
-
-    /// Returns the path to the bound unix datagram socket for a WAN device
-    pub fn socket(&self) -> &Path {
-        &self.socket
     }
 
     /// Returns the IPv4 address of this WAN device
@@ -297,31 +196,54 @@ impl<'a> WanHandle<'a> {
     ///
     /// ### Arguments
     /// * `router` - Transmit/send channel to router
-    pub fn start(&mut self, router: &Path) -> Result<(), NetworkError> {
+    pub fn start(&mut self, channel: Box<RouterTx>, cb: FnCallback) -> Result<(), NetworkError> {
         tracing::debug!("starting wan adapter");
         if self.is_running() {
             tracing::debug!("wan already running");
         }
 
-        let instance = self.vtable.start(&self.device, router, &self.socket)?;
+        // leak the channel...we'll recapture it in the instance object
+        let channel = Box::into_raw(channel);
+
+        let instance = self
+            .vtable
+            .start(&self.device, channel as *mut c_void, cb)?;
+
         self.instance = Some(instance);
 
         tracing::debug!("started wan adapter");
         Ok(())
     }
 
+    pub fn write(&self, data: &[u8]) -> Result<(), PluginError> {
+        if let Some(ref instance) = self.instance {
+            self.vtable.write(instance, data)?;
+            self.stats.tx_add(data.len() as u64);
+        } else {
+            tracing::warn!("attempted to write to non-running wan: {}", self.name);
+        }
+
+        Ok(())
+    }
+
     /// Attempts to stop this WAN device
     pub fn stop(&mut self) -> Result<(), NetworkError> {
         if let Some(instance) = self.instance.take() {
-            self.vtable.stop(instance)?;
+            let channel = self.vtable.stop(instance)?;
+            let channel = unsafe { Box::from_raw(channel as *mut RouterTx) };
+            drop(channel);
         }
 
         Ok(())
     }
 }
 
-impl<'a> Drop for WanHandle<'a> {
+impl Drop for WanHandle {
     fn drop(&mut self) {
+        if let Err(error) = self.stop() {
+            tracing::warn!("[POTENTIAL MEMORY LEAK] failed to stop wan device '{}' and cleanup instance handle: {error:?}", self.name);
+        }
+
         if let Err(error) = self.vtable.destroy(&self.device) {
             tracing::warn!(
                 "[MEMORY LEAK] failed to destroy wan device ({}): {error}",
@@ -339,14 +261,9 @@ impl WanSocket {
     /// ### Arguments
     /// * `sock` - Sock to use as sender
     /// * `pkt` - Ipv4 Packet to transmit
-    pub fn send<P: Ipv4Packet>(&self, sock: &UnixDatagram, pkt: &P) -> std::io::Result<()> {
-        let sz = sock.send_to(pkt.as_bytes(), &self.path)?;
-        self.stats.tx_add(sz as u64);
+    pub fn send<P: Ipv4Packet>(&self, _sock: &UnixDatagram, _pkt: &P) -> std::io::Result<()> {
+        //self.stats.tx_add(sz as u64);
         Ok(())
-    }
-
-    pub fn addr(&self) -> UnixAddr {
-        UnixAddr::new(&self.path).unwrap()
     }
 
     /// Increases the WAN stats tx field by the amount received

@@ -1,57 +1,42 @@
 //! Simple L3 Router
 
+pub mod builder;
+pub mod handle;
 pub mod handler;
 pub mod table;
 
 use std::{
     collections::{BTreeMap, HashMap},
     fmt::Display,
-    io::{IoSlice, IoSliceMut},
     net::IpAddr,
-    os::unix::io::AsRawFd,
-    path::Path,
+    os::raw::c_void,
     sync::Arc,
-    thread::JoinHandle,
 };
 
+use builder::RouterBuilder;
 use flume::{Receiver, Sender};
-use mio::{event::Source, Events, Interest, Poll, Registry, Token, Waker};
-use nix::{
-    errno::Errno,
-    sys::socket::{MsgFlags, UnixAddr},
-};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use shadesmar_core::{
     ipv4::{Ipv4Flags, Ipv4Packet, Ipv4PacketOwned},
-    plugins::WanPlugins,
     protocols::ArpPacket,
-    queue::UnixSendQueue,
+    switch::{Switch, SwitchPort},
     types::{
         buffers::{PacketBuffer, PacketBufferPool},
         EtherType, Ipv4Network, MacAddress,
     },
-    EthernetFrame, EthernetPacket, ProtocolError, Switch, SwitchPort,
+    EthernetFrame, EthernetPacket, ProtocolError,
 };
-use table::{ArcRouteTable, RouteTable};
+use table::ArcRouteTable;
 use uuid::Uuid;
 
-use crate::config::WanConfig;
 pub use crate::net::{switch::VirtioSwitch, wan::WanHandle};
 
 use self::handler::ProtocolHandler;
 
-use super::{
-    pcap::PcapLogger,
-    wan::{WanMap, WanSocketMap},
-    NetworkError,
-};
+use super::{pcap::PcapLogger, NetworkError};
 
 const IPV4_HDR_SZ: usize = 20;
-
-const TOKEN_ROUTER_WAKER: Token = Token(0);
-const TOKEN_ROUTER_SOCKET: Token = Token(1);
-const TOKEN_WAN_SENDER: Token = Token(2);
 
 /// Message that is sent over the router's channel to queue a packet
 /// to be processed/routed
@@ -60,7 +45,7 @@ pub enum RouterMsg {
     FromLan(EthernetPacket),
 
     /// Attempt to write WAN packets (if the WAN is ready)
-    WriteWan,
+    FromWan(Ipv4PacketOwned),
 
     /// Tells the router to stop and exit
     Quit,
@@ -80,28 +65,7 @@ pub enum RouterAction {
 
 /// Provides means to send packets to be handle/routed by the router
 #[derive(Clone)]
-pub struct RouterTx(Sender<RouterMsg>, Arc<Waker>);
-
-/// Provides a means of queueing packets to be processed by a `Router`
-pub struct RouterHandle<'a> {
-    /// MAC address of the router
-    mac: MacAddress,
-
-    /// Network for which the router is responsible
-    network: Ipv4Network,
-
-    /// A reference to the router's route table
-    route_table: ArcRouteTable,
-
-    /// Currently active WAN connections for the router
-    wans: WanMap<'a>,
-
-    /// Handle to send messages to the router thread
-    tx: RouterTx,
-
-    /// Handle to the spawned router thread
-    thread: JoinHandle<()>,
-}
+pub struct RouterTx(Sender<RouterMsg>);
 
 /// A Layer 3 IPv4 Router
 pub struct Router {
@@ -113,15 +77,6 @@ pub struct Router {
 
     /// Port on the switch to which this router is assigned
     port: usize,
-
-    /// Instance of an async-poller
-    poller: Poll,
-
-    /// (Non-blocking) Socket used to listen for packets from external WAN devices
-    recv_sock: mio::net::UnixDatagram,
-
-    /// Backlogged packets to send to WAN device
-    send_queue: Arc<UnixSendQueue>,
 
     /// WAN routing table, maps IPv4 cidrs to wan index
     table: ArcRouteTable,
@@ -139,24 +94,7 @@ pub struct Router {
     pcap: Arc<PcapLogger>,
 
     /// Currently active WAN connections for the router
-    wans: WanSocketMap,
-
-    /// Handle to transmit messages to self
-    tx: RouterTx,
-}
-
-/// A `RouteBuilder` provides convenience methods for building routers
-#[derive(Default)]
-pub struct RouterBuilder {
-    /// Mapping of ipv4 protocol numbers to a handler to run when a packet
-    /// matching the protocol is received
-    ip4_handlers: HashMap<u8, Box<dyn ProtocolHandler>>,
-
-    /// Wide Area Network (WAN) connections
-    wans: Vec<WanConfig>,
-
-    /// WAN routing table, maps IPv4 cidrs to wan index
-    table: HashMap<Ipv4Network, String>,
+    wans: Arc<RwLock<HashMap<Uuid, WanHandle>>>,
 }
 
 /// Contains the status of the router, when requested by a control message
@@ -175,29 +113,42 @@ pub struct RouterStatus {
     pub wan_stats: BTreeMap<String, (bool, String, u64, u64)>,
 }
 
+pub extern "C" fn router_callback(target: *const c_void, data: *const u8, len: usize) -> i32 {
+    tracing::trace!("caught router callback (data len: {})", len);
+
+    let data = match target.is_null() || data.is_null() || len == 0 {
+        true => return -1,
+        false => unsafe { std::slice::from_raw_parts(data, len) },
+    };
+
+    let mut buffer = PacketBufferPool::get();
+    buffer.extend_from_slice(data);
+
+    unsafe { (*(target as *const RouterTx)).route(buffer) };
+
+    0
+}
+
 impl RouterTx {
     /// Creates a new channel to communicate with the router
-    pub fn new(
-        registry: &Registry,
-        token: Token,
-    ) -> Result<(Self, Receiver<RouterMsg>), NetworkError> {
+    pub fn new() -> Result<(Self, Receiver<RouterMsg>), NetworkError> {
         let (tx, rx) = flume::unbounded();
-        let waker = Waker::new(registry, token)?;
-        let waker = Arc::new(waker);
 
-        Ok((Self(tx, waker), rx))
+        Ok((Self(tx), rx))
     }
 
     /// Sends a quit message down the channel
     pub fn quit(&self) {
         self.0.send(RouterMsg::Quit).ok();
-        self.1.wake().ok();
     }
 
-    /// Notifies the router the WAN is ready to write data
-    pub fn notify_wan_ready(&self) {
-        self.0.send(RouterMsg::WriteWan).ok();
-        self.1.wake().ok();
+    pub fn route(&self, data: PacketBuffer) {
+        match Ipv4PacketOwned::new(data) {
+            Ok(pkt) => {
+                self.0.send(RouterMsg::FromWan(pkt)).ok();
+            }
+            Err(error) => tracing::warn!("unable to route packet: {error:?}"),
+        }
     }
 
     /// Queues an IPv6 packet to be routed
@@ -206,142 +157,6 @@ impl RouterTx {
     /// * `pkt` - IPv6 packet to route
     pub fn route_ipv6(&self, _pkt: Vec<u8>) {
         tracing::warn!("[router] no ipv6 support");
-    }
-}
-
-#[allow(dead_code)]
-impl RouterBuilder {
-    /// Registers a series of WAN configurations with this router
-    ///
-    /// The WAN device will handle all unknown/non-local packets process
-    /// by the router.  A non-local packet is any packet that's destination
-    /// IP address does not reside inside the router's subnet / network.
-    ///
-    /// ### Arguments
-    /// * `wans` - Upstream provider configuration for unknown/non-local packets
-    pub fn register_wans(mut self, wans: &[WanConfig]) -> Self {
-        self.wans.extend_from_slice(wans);
-        self
-    }
-
-    /// Install a new routing table for WAN connections
-    ///
-    /// The routing table maps IPv4 addresses and networks (CIDRs) to indexs in the WAN
-    /// array/vector.  If an entry is not found, then the default (0) WAN connection
-    /// is used.
-    ///
-    /// ### Arguments
-    /// * `table` - Map of IPv4 networks (CIDRs) to WAN index
-    pub fn routing_table(mut self, table: &HashMap<Ipv4Network, String>) -> Self {
-        self.table = table.clone();
-        self
-    }
-
-    /// Adds a (layer-4) protocol handler for this router
-    ///
-    /// A protocol handler provides a way to dynamically handle various layer 4 (i.e., tcp/udp/icmp)
-    /// are seen by this router.
-    ///
-    /// ### Arguments
-    /// * `handler` - The handler to call when the layer 4 protocol is encountered
-    pub fn register_l4_proto_handler<P: ProtocolHandler + 'static>(mut self, handler: P) -> Self {
-        let proto = handler.protocol();
-        self.ip4_handlers.insert(proto, Box::new(handler));
-        self
-    }
-
-    /// Create the router, spawning a new thread to run the core logic
-    ///
-    /// ### Arguments
-    /// * `network` - Network address and subnet mask
-    /// * `switch` - L2 switch this router to which this router is connected
-    /// * `pcap` - Handle to Pcap logging thread
-    pub fn spawn<'a>(
-        self,
-        network: Ipv4Network,
-        switch: VirtioSwitch,
-        pcap: Arc<PcapLogger>,
-        plugins: &'a WanPlugins,
-        run_dir: &Path,
-    ) -> Result<RouterHandle<'a>, NetworkError> {
-        let router_span = tracing::info_span!("create router", network = %network);
-        let _enter = router_span.enter();
-
-        let poller = Poll::new()?;
-
-        let (tx, rx) = RouterTx::new(poller.registry(), TOKEN_ROUTER_WAKER)?;
-
-        let sock_path = run_dir.join("router.sock");
-        let mut recv_sock = mio::net::UnixDatagram::bind(&sock_path)?;
-
-        let send_queue = UnixSendQueue::new()?;
-
-        recv_sock.register(poller.registry(), TOKEN_ROUTER_SOCKET, Interest::READABLE)?;
-        send_queue.register(poller.registry(), TOKEN_WAN_SENDER)?;
-
-        let mut wans = WanMap::default();
-        for wan in self.wans {
-            let span = tracing::info_span!("create wan adapter", name = wan.name);
-            let _enter = span.enter();
-
-            let mut wan = WanHandle::new(wan, &run_dir, plugins)?;
-            if wan.pcap_enabled() {
-                pcap.capture_wan(wan.id());
-            }
-
-            wan.start(&sock_path)?;
-            wans.insert(wan);
-        }
-
-        let table = RouteTable::new();
-
-        let port = switch.connect(tx.clone());
-        let mac = MacAddress::generate();
-
-        let router = Router {
-            arp: RwLock::new(HashMap::new()),
-            switch,
-            port,
-            poller,
-            recv_sock,
-            send_queue: Arc::clone(&send_queue),
-            table: Arc::clone(&table),
-            mac,
-            network,
-            ip4_handlers: self.ip4_handlers,
-            pcap,
-            wans: wans.sockets(),
-            tx: tx.clone(),
-        };
-        drop(_enter);
-
-        let _send_handle = send_queue.spawn(String::from("usq-router"), move |fd, dst, pkt| {
-            let iovs = [IoSlice::new(pkt.as_bytes())];
-            nix::sys::socket::sendmsg(fd, &iovs, &[], MsgFlags::empty(), Some(&dst))?;
-            Ok(())
-        })?;
-
-        let thread = std::thread::Builder::new()
-            .name(String::from("router"))
-            .spawn(move || router.run(rx))?;
-
-        let handle = RouterHandle {
-            mac,
-            route_table: table,
-            network,
-            wans,
-            thread,
-            tx,
-        };
-
-        for (net, wan) in self.table {
-            match handle.add_route(net, &wan) {
-                Ok(_) => tracing::debug!("added route to {net} over {wan}"),
-                Err(error) => tracing::warn!(%error, "unable to add route to {net} over {wan}"),
-            }
-        }
-
-        Ok(handle)
     }
 }
 
@@ -358,41 +173,30 @@ impl Router {
     ///
     /// ### Arguments
     /// * `rx` - Receive side of the router message channel of which packets will be received
-    pub fn run(mut self, rx: Receiver<RouterMsg>) {
-        let mut events = Events::with_capacity(10);
-
-        'poll: loop {
-            tracing::trace!("[router] calling mio poll");
-            self.poller.poll(&mut events, None).unwrap();
-
-            for event in &events {
-                match event.token() {
-                    TOKEN_ROUTER_WAKER => {
-                        for msg in rx.drain() {
-                            match msg {
-                                RouterMsg::Quit => break 'poll,
-                                RouterMsg::WriteWan => {
-                                    // TODO
-                                }
-                                RouterMsg::FromLan(frame) => match self.route(frame) {
-                                    Ok(_) => tracing::trace!("routed packet!"),
-                                    Err(error) => tracing::warn!("unable to route packet: {error}"),
-                                },
-                            }
-                        }
-                    }
-                    TOKEN_ROUTER_SOCKET if event.is_readable() => match self.handle_wan() {
-                        Ok(_) => (),
+    pub fn run(self, rx: Receiver<RouterMsg>) {
+        while let Ok(msg) = rx.recv() {
+            match msg {
+                RouterMsg::Quit => break,
+                RouterMsg::FromWan(pkt) => {
+                    let _span = tracing::info_span!("from wan").entered();
+                    match self.route_ip4(pkt) {
+                        Ok(action) => match self.handle_action(action, None) {
+                            Ok(_) => (),
+                            Err(error) => tracing::warn!("unable to route ipv4 packet: {error:?}"),
+                        },
                         Err(error) => {
-                            tracing::error!(%error, "wan handle failed");
-                            break 'poll;
+                            tracing::warn!("unable to route packet (source: wan): {error:?}")
                         }
-                    },
-                    TOKEN_WAN_SENDER if event.is_writable() => {
-                        tracing::warn!("setting router send_queue to ready");
-                        self.send_queue.set_ready();
                     }
-                    _ => tracing::debug!("unknown mio token (router poller)"),
+                }
+                RouterMsg::FromLan(frame) => {
+                    let _span = tracing::info_span!("from lan").entered();
+                    match self.route_eth_frame(frame) {
+                        Ok(_) => tracing::trace!("routed packet!"),
+                        Err(error) => {
+                            tracing::warn!("unable to route packet (source :lan): {error:?}")
+                        }
+                    }
                 }
             }
         }
@@ -400,82 +204,12 @@ impl Router {
         tracing::info!("router died");
     }
 
-    /// Handle a packet inbound from a WAN connection
-    ///
-    /// An inbound WAN packet has the following structure:
-    /// ```
-    /// | 0..16  | 17 ..  |
-    /// | WAN ID | Packet |
-    /// ```
-    ///
-    /// Where the WAN ID is a 16-byte (128-bit) uuid
-    fn handle_wan(&mut self) -> Result<(), NetworkError> {
-        tracing::info_span!("handle packet from wan device");
-
-        'recv: loop {
-            let mut id = [0u8; 16];
-            let mut pkt = PacketBufferPool::with_size(1600);
-
-            let mut iovs = [IoSliceMut::new(&mut id), IoSliceMut::new(&mut pkt)];
-
-            let msg = nix::sys::socket::recvmsg::<UnixAddr>(
-                self.recv_sock.as_raw_fd(),
-                &mut iovs,
-                None,
-                MsgFlags::MSG_DONTWAIT,
-            );
-
-            match msg {
-                Ok(msg) if msg.bytes < 16 => {
-                    return Err(NetworkError::Generic(
-                        format!(
-                            "wan pkt too small. got {} bytes, expected at least 16 bytes",
-                            msg.bytes
-                        )
-                        .into(),
-                    ))?;
-                }
-                Ok(msg) => {
-                    let sz = msg.bytes;
-                    pkt.truncate(sz - 16);
-                }
-                Err(error) if error == Errno::EWOULDBLOCK => {
-                    // no more data
-                    break 'recv;
-                }
-                Err(error) => {
-                    tracing::error!("unable to read from router socket");
-                    return Err(error)?;
-                }
-            };
-
-            let id = Uuid::from_bytes(id);
-
-            self.wans
-                .read()
-                .get(&id)
-                .map(|wan| wan.update_rx(pkt.len() as u64));
-
-            let pkt: Ipv4PacketOwned = Ipv4PacketOwned::new(pkt)?;
-            self.pcap.log_wan(id, pkt.as_bytes());
-
-            if let Err(error) = self
-                .route_ip4(pkt)
-                .and_then(|action| self.handle_action(action, None))
-            {
-                tracing::warn!(?error, "unable to route wan packet");
-            }
-        }
-
-        Ok(())
-    }
-
     /// Routes a packet based on it's packet type
     ///
     /// ### Arguments
     /// * `ethertype` - What type of data is contained in the packet
     /// * `pkt` - Packet data (based on ethertype)
-    fn route(&self, pkt: EthernetPacket) -> Result<(), ProtocolError> {
+    fn route_eth_frame(&self, pkt: EthernetPacket) -> Result<(), ProtocolError> {
         let _span =
             tracing::info_span!("route frame", len = pkt.len(), cap = pkt.capacity()).entered();
 
@@ -518,7 +252,7 @@ impl Router {
                 Ok(_) => tracing::trace!("[router] forwarded packet"),
                 Err(error) => tracing::warn!(?error, "[router] unable to forward packet"),
             },
-            RouterAction::Drop(_pkt) => tracing::debug!("[router] dropping packet"),
+            RouterAction::Drop(_pkt) => tracing::warn!("[router] dropping packet"),
         }
 
         Ok(())
@@ -581,12 +315,10 @@ impl Router {
 
         let wans = self.wans.read();
         if let Some(wan) = wans.get(&wan_id) {
-            let addr = wan.addr();
-            wan.update_tx(pkt.len().into());
-            self.send_queue.enqueue(addr, pkt);
+            self.pcap.log_wan(wan.id(), pkt.as_bytes());
+            wan.write(pkt.as_bytes()).ok();
         }
 
-        self.tx.notify_wan_ready();
         Ok(())
     }
 
@@ -615,11 +347,11 @@ impl Router {
         match self.network.contains(pkt.dst()) || pkt.dst().is_broadcast() {
             true => match self.is_local(pkt.dst()) || pkt.dst().is_broadcast() {
                 true => {
-                    tracing::trace!("router address, handling internally");
+                    tracing::trace!("destination: router");
                     Ok(self.handle_local_ipv4(pkt))
                 }
                 false => {
-                    tracing::trace!("lan address, handling via switch");
+                    tracing::trace!("destination: lan");
 
                     let dst = pkt.dst();
                     Ok(RouterAction::ToLan(
@@ -630,7 +362,7 @@ impl Router {
                 }
             },
             false => {
-                tracing::trace!("non-local address, routing to WAN");
+                tracing::trace!("destination: wan");
                 Ok(RouterAction::ToWan(pkt))
             }
         }
@@ -643,7 +375,7 @@ impl Router {
     /// ### Arguments
     /// * `pkt` -  The (unsupported) IPv6 packet
     fn route_ip6(&self, pkt: PacketBuffer) -> Result<RouterAction, ProtocolError> {
-        tracing::debug!("ipv6 not supported, dropping packet");
+        tracing::warn!("ipv6 not supported, dropping packet");
         Ok(RouterAction::Drop(Some(pkt)))
     }
 
@@ -711,134 +443,11 @@ impl Router {
         data.extend_from_slice(&ethertype.as_u16().to_be_bytes());
         data.extend_from_slice(&pkt);
 
-        tracing::trace!("[router] write to switch: 0x{:02x?}", &data[..10]);
+        tracing::trace!("[router] write to switch: 0x{:02x?}", &data[..14]);
 
         if let Err(error) = self.switch.process(self.port, data) {
             tracing::warn!(?error, "unable to write to switch");
         }
-    }
-}
-
-impl<'a> RouterHandle<'a> {
-    /// Returns the MAC address of the router
-    pub fn mac(&self) -> MacAddress {
-        self.mac
-    }
-
-    /// Returns the status of the router
-    pub fn status(&self) -> RouterStatus {
-        let wan_stats = self
-            .wans
-            .iter()
-            .map(|(_, wan)| {
-                (
-                    wan.name().to_owned(),
-                    (
-                        wan.is_running(),
-                        wan.ty().to_owned(),
-                        wan.stats_tx(),
-                        wan.stats_rx(),
-                    ),
-                )
-            })
-            .collect();
-
-        RouterStatus {
-            mac: self.mac,
-            network: self.network,
-            route_table: self.route_table.routes(),
-            wan_stats,
-        }
-    }
-
-    /// Adds a route to the routing table
-    ///
-    /// ### Arguments
-    /// * `dst` - Destintation network
-    pub fn add_route<S: Into<String>>(&self, dst: Ipv4Network, wan: S) -> Result<(), NetworkError> {
-        let wan_name = wan.into();
-        let wan_id = self
-            .wans
-            .find_by_name(&wan_name)
-            .ok_or_else(|| NetworkError::WanDeviceNotFound(wan_name.clone()))?;
-
-        let wan = self
-            .wans
-            .get(wan_id)
-            .ok_or_else(|| NetworkError::WanDeviceNotFound(wan_name.clone()))?;
-
-        self.route_table.add_route(dst, wan);
-
-        Ok(())
-    }
-
-    /// Deletes a route from the routing table
-    ///
-    /// ### Arguments
-    /// * `route` - Route to delete
-    pub fn del_route(&self, route: Ipv4Network) -> Result<(), NetworkError> {
-        self.route_table.remove_route(route)
-    }
-
-    /// Adds a new WAN connection
-    ///
-    /// ### Arguments
-    /// * `name` - Name of the wan connection
-    /// * `cfg` - WAN device configuration
-    pub fn add_wan(&self, _cfg: WanConfig) -> Result<(), NetworkError> {
-        /*
-        let mut wan = WanHandle::new(cfg)?;
-        if wan.pcap_enabled() {
-            //pcap.capture_wan(wan.id());
-        }
-
-        wan.start(self.tx.clone())?;
-        self.wans.write().insert(wan.id(), wan);
-        */
-
-        Ok(())
-    }
-
-    /// Deletes a WAN connection
-    ///
-    /// ### Arguments
-    /// * `name` - Name of WAN connection to delete
-    /// * `cleanup` - True to remove associated routes, false to leave them
-    pub fn del_wan<S: AsRef<str>>(&mut self, name: S, cleanup: bool) -> Result<(), NetworkError> {
-        let name = name.as_ref();
-        let id = self
-            .wans
-            .find_by_name(name)
-            .ok_or_else(|| NetworkError::WanDeviceNotFound(name.to_owned()))?;
-
-        tracing::info!("stopping wan device {name}");
-
-        let mut wan = self
-            .wans
-            .remove(id)
-            .ok_or_else(|| NetworkError::WanDeviceNotFound(name.to_owned()))?;
-
-        wan.stop()?;
-
-        if cleanup {
-            self.route_table.remove_routes_by_wan(name)?;
-        }
-
-        Ok(())
-    }
-
-    /// Attempts to stop the router thread and cleanup and allocated memory
-    pub fn stop(self) -> Result<(), NetworkError> {
-        // stop all wans
-        for (_id, mut wan) in self.wans.into_iter() {
-            wan.stop()?;
-        }
-
-        // signal the thread to stop
-        self.tx.quit();
-        self.thread.join().ok();
-
-        Ok(())
     }
 }
 
@@ -855,7 +464,6 @@ impl SwitchPort for RouterTx {
             .0
             .send(RouterMsg::FromLan(pkt))
             .map_err(|err| std::io::Error::other(err))
-            .and_then(|_| self.1.wake())
         {
             tracing::warn!("unable to queue packet to router: {error}");
         }
@@ -871,11 +479,5 @@ impl Display for RouterAction {
         };
 
         write!(f, "{s}")
-    }
-}
-
-impl Drop for Router {
-    fn drop(&mut self) {
-        // TODO
     }
 }

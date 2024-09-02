@@ -85,13 +85,12 @@ macro_rules! define_wan_plugin {
             }
         }
 
-
+        /// Starts a device, spawning a new instance with the provided settings
         #[no_mangle]
-        pub extern "C" fn wan_start(device: *mut c_void, settings: *const c_char) -> *const c_void {
+        pub extern "C" fn wan_start(device: *mut c_void, channel: *const c_void, cb: extern fn (*const c_void, *const u8, usize) -> i32) -> *const c_void {
             let device = shadesmar_core::arg!(ptr: $dev; data: device; error: std::ptr::null());
-            let settings = shadesmar_core::arg!(json: shadesmar_core::plugins::WanPluginStartOpts; data: settings; error: std::ptr::null());
 
-            let handle = match device.run(settings) {
+            let handle = match device.run(channel, cb) {
                 Ok(handle) => handle,
                 Err(_error) => return std::ptr::null(),
             };
@@ -102,6 +101,26 @@ macro_rules! define_wan_plugin {
             Box::into_raw(Box::new(handle)) as *const c_void
         }
 
+        /// Sends data to a WAN device
+        #[no_mangle]
+        pub extern "C" fn wan_send(handle: *mut c_void, data: *const u8, len: usize) -> i32 {
+            let handle = shadesmar_core::arg!(ptr: $handle; data: handle; error: -1);
+
+            let ret = match (data.is_null(), len) {
+                (true, _) => 0,
+                (false, 0) => 0,
+                (false, _) => {
+                    let data = unsafe { std::slice::from_raw_parts(data, len) };
+                    handle.write(data);
+                    0
+                }
+           };
+
+           // "leak" the handle so it doesn't get deallocated (yet)
+           Box::into_raw(handle);
+           ret
+        }
+
         /// Attempts to stop a running device
         #[no_mangle]
         pub extern "C" fn wan_stop(handle: *mut c_void) -> i32 {
@@ -109,7 +128,7 @@ macro_rules! define_wan_plugin {
 
             // send SIGTERM to thread to indicate it's time to quit
             match handle.stop() {
-                Ok(_) => 0,
+                Ok(ptr) => 0,
                 Err(_err) => {
                     tracing::warn!("unable to stop {} handle", $name);
                     -1

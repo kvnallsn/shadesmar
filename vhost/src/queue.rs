@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::Context;
 use nix::unistd;
-use shadesmar_core::{types::buffers::PacketBufferPool, Switch};
+use shadesmar_core::{switch::Switch, types::buffers::PacketBufferPool};
 use virtio_queue::{Queue, QueueOwnedT, QueueT};
 use vm_memory::{GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap};
 

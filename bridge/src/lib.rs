@@ -3,13 +3,19 @@ pub mod ctrl;
 mod error;
 pub mod net;
 
-use std::{collections::HashMap, fmt::Display, os::fd::AsRawFd, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt::Display,
+    os::fd::AsRawFd,
+    path::PathBuf,
+    sync::{Arc, OnceLock},
+};
 
 use ctrl::CtrlResponse;
 use mio::{unix::SourceFd, Events, Interest, Poll, Token};
 use net::{
     pcap::PcapLogger,
-    router::{RouterHandle, RouterStatus},
+    router::{handle::RouterHandle, RouterStatus},
     switch::SwitchStatus,
 };
 use nix::{
@@ -21,10 +27,21 @@ use nix::{
     unistd::Pid,
 };
 use serde::{Deserialize, Serialize};
-use shadesmar_core::{plugins::WanPlugins, types::buffers::PacketBufferPool};
+use shadesmar_core::{
+    plugins::{PluginError, WanPlugins},
+    types::buffers::PacketBufferPool,
+};
 use shadesmar_vhost::{DeviceOpts, VHostSocket};
 
 pub use self::config::Config as BridgeConfig;
+
+static WAN_PLUGINS: OnceLock<WanPlugins> = OnceLock::new();
+
+pub fn get_wan_plugins() -> Result<&'static WanPlugins, PluginError> {
+    WAN_PLUGINS
+        .get()
+        .ok_or_else(|| PluginError::new("plugins not loaded"))
+}
 
 use crate::{
     ctrl::{CtrlRequest, CtrlServerStream, CtrlSocket},
@@ -58,7 +75,6 @@ pub struct BridgeBuilder {
 
 pub struct Bridge {
     name: String,
-    run_dir: PathBuf,
     vhost_socket_path: PathBuf,
     ctrl_socket_path: PathBuf,
     cfg: BridgeConfig,
@@ -145,7 +161,6 @@ impl BridgeBuilder {
             ctrl_socket_path,
             cfg,
             data_dir,
-            run_dir,
         })
     }
 }
@@ -200,7 +215,7 @@ impl Bridge {
     ///
     /// ### Arguments
     /// * `plugins` - Loaded WAN plugins
-    pub fn start(self, plugins: &WanPlugins) -> Result<(), Error> {
+    pub fn start(self, plugins: WanPlugins) -> Result<(), Error> {
         let mut mask = SigSet::empty();
         mask.add(Signal::SIGTERM);
         mask.add(Signal::SIGINT);
@@ -218,12 +233,15 @@ impl Bridge {
     /// ### Arguments
     /// * `sfd` - Signal File Descriptor
     /// * `plugins` - Loaded WAN plugins
-    pub fn run(self, sfd: SignalFd, plugins: &WanPlugins) -> Result<(), Error> {
+    pub fn run(self, sfd: SignalFd, plugins: WanPlugins) -> Result<(), Error> {
         const TOKEN_VHOST: Token = Token(0);
         const TOKEN_SIGNAL: Token = Token(1);
         const TOKEN_CTRL: Token = Token(2);
 
         tracing::debug!(bridge = %self, "bridge starting");
+        WAN_PLUGINS
+            .set(plugins)
+            .map_err(|_| Error::new("unable to set plugin global"))?;
 
         let mut vhost_socket = VHostSocket::new(&self.vhost_socket_path)?;
         let mut ctrl_socket = CtrlSocket::bind(&self.ctrl_socket_path)?;
@@ -249,8 +267,6 @@ impl Bridge {
                 self.cfg.router.ipv4,
                 switch.clone(),
                 Arc::clone(&pcap_logger),
-                plugins,
-                &self.run_dir,
             )?;
 
         let mut poller = Poll::new()?;

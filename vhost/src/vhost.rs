@@ -3,7 +3,7 @@
 use std::{io, path::PathBuf};
 
 use mio::{event::Source, net::UnixListener, Events, Interest, Poll, Token};
-use shadesmar_core::Switch;
+use shadesmar_core::switch::Switch;
 
 use crate::{
     device::{DeviceOpts, VirtioDevice},

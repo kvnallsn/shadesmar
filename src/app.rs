@@ -330,7 +330,7 @@ impl App {
 
         // NOTE: we delay the handling of the error message to ensure we
         // cleanup the run directory in case of an error
-        let res = bridge.start(&self.plugins);
+        let res = bridge.start(self.plugins);
         network.cleanup()?;
         res?;
 
