@@ -4,7 +4,6 @@ mod macros;
 pub mod nat;
 pub mod plugins;
 pub mod protocols;
-pub mod queue;
 pub mod switch;
 pub mod types;
 
