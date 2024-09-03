@@ -197,9 +197,11 @@ impl WanHandle {
     /// ### Arguments
     /// * `router` - Transmit/send channel to router
     pub fn start(&mut self, channel: Box<RouterTx>, cb: FnCallback) -> Result<(), NetworkError> {
-        tracing::debug!("starting wan adapter");
+        let _span = tracing::warn_span!("start wan device", name = self.name());
+
         if self.is_running() {
-            tracing::debug!("wan already running");
+            tracing::warn!("wan device already running");
+            return Ok(());
         }
 
         // leak the channel...we'll recapture it in the instance object
@@ -211,10 +213,14 @@ impl WanHandle {
 
         self.instance = Some(instance);
 
-        tracing::debug!("started wan adapter");
+        tracing::trace!("started wan adapter");
         Ok(())
     }
 
+    /// Writes data to the WAN device
+    ///
+    /// ### Arguments
+    /// * `data` - Data to write to WAN device
     pub fn write(&self, data: &[u8]) -> Result<(), PluginError> {
         if let Some(ref instance) = self.instance {
             self.vtable.write(instance, data)?;

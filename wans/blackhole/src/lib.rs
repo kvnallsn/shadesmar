@@ -8,6 +8,7 @@ use shadesmar_core::{
     plugins::{FnCallback, WanPluginConfig},
     types::buffers::{PacketBuffer, PacketBufferPool},
 };
+use uuid::Uuid;
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct BlackholeConfig {
@@ -17,7 +18,7 @@ pub struct BlackholeConfig {
 }
 
 pub struct BlackholeDevice {
-    _marker: u32,
+    id: Uuid,
 }
 
 pub struct BlackholeInstance {
@@ -25,6 +26,7 @@ pub struct BlackholeInstance {
 }
 
 pub struct BlackholeHandle {
+    id: Uuid,
     channel: flume::Sender<BlackholeMessage>,
     router: *const c_void,
     thread: JoinHandle<()>,
@@ -43,8 +45,8 @@ shadesmar_core::define_wan_plugin!(
 );
 
 impl BlackholeDevice {
-    pub fn new(_cfg: WanPluginConfig<BlackholeConfig>) -> anyhow::Result<Self> {
-        Ok(BlackholeDevice { _marker: 67331 })
+    pub fn new(cfg: WanPluginConfig<BlackholeConfig>) -> anyhow::Result<Self> {
+        Ok(BlackholeDevice { id: cfg.id })
     }
 
     pub fn run(&self, channel: *const c_void, _cb: FnCallback) -> anyhow::Result<BlackholeHandle> {
@@ -59,6 +61,7 @@ impl BlackholeDevice {
             })?;
 
         Ok(BlackholeHandle {
+            id: self.id,
             channel: tx,
             router: channel,
             thread,
@@ -87,12 +90,16 @@ impl BlackholeInstance {
 
 impl BlackholeHandle {
     pub fn write(&self, data: &[u8]) {
+        let _span = tracing::info_span!("blackhole handle write", wan_id = %self.id).entered();
+
         let mut buffer = PacketBufferPool::get();
         buffer.extend_from_slice(data);
         self.channel.send(BlackholeMessage::Data(buffer)).ok();
     }
 
     pub fn stop(self) -> anyhow::Result<*const c_void> {
+        let _span = tracing::info_span!("blackhole handle stop", wan_id = %self.id).entered();
+
         self.channel.send(BlackholeMessage::Quit).ok();
         self.thread.join().ok();
         Ok(self.router)

@@ -45,7 +45,7 @@ pub enum RouterMsg {
     FromLan(EthernetPacket),
 
     /// Attempt to write WAN packets (if the WAN is ready)
-    FromWan(Ipv4PacketOwned),
+    FromWan(Uuid, Ipv4PacketOwned),
 
     /// Tells the router to stop and exit
     Quit,
@@ -113,18 +113,52 @@ pub struct RouterStatus {
     pub wan_stats: BTreeMap<String, (bool, String, u64, u64)>,
 }
 
-pub extern "C" fn router_callback(target: *const c_void, data: *const u8, len: usize) -> i32 {
+/// Callback executed when a WAN plugin writes data to the router
+///
+/// This function will "catch" the callback from a WAN plugin when it indicates it has
+/// data available for the router to process. Because it is not possible to have C, or
+/// rather, the FFI layer, call a method on a struct directly (i.e., with a receiver of &self or
+/// self), the first argument (`channel`) is a pointer to the object with the desired method.
+/// In this case, that's a 'RouterTx' object that has a method to send data to the router.
+///
+/// ### Arguments
+/// * `channel` - Pointer to the `RouterTx` channel associated with this WAN plugin
+/// * `id` - 16-byte (128-bit, UUID) of the WAN plugin
+/// * `data` - Data (byte slice/buffer/array) to send to router
+/// * `len` - Length of data argument
+pub extern "C" fn router_callback(
+    channel: *const c_void,
+    id: *const u8,
+    data: *const u8,
+    len: usize,
+) -> i32 {
     tracing::trace!("caught router callback (data len: {})", len);
 
-    let data = match target.is_null() || data.is_null() || len == 0 {
+    // SAFETY: we check to ensure the data is not null or otherwise zero or length
+    // before attempting to reconstitute it as a slice
+    let (id, data) = match channel.is_null() || id.is_null() || data.is_null() || len == 0 {
         true => return -1,
-        false => unsafe { std::slice::from_raw_parts(data, len) },
+        false => unsafe {
+            (
+                std::slice::from_raw_parts(id, 16),
+                std::slice::from_raw_parts(data, len),
+            )
+        },
     };
 
+    // ID is 16-bytes, reconstitute as a uuid
+    let id = Uuid::from_slice(id).unwrap_or_default();
+
+    // We cannot assume how long the data will valid (except for the duration of this function)
+    // so we'll copy it into one of our buffers
     let mut buffer = PacketBufferPool::get();
     buffer.extend_from_slice(data);
 
-    unsafe { (*(target as *const RouterTx)).route(buffer) };
+    // SAFETY: we checked above to ensure the pointer was not null
+    //
+    // It is imperative that only a `RouterTx` is passed through when an WAN device
+    // instance is created!
+    unsafe { (*(channel as *const RouterTx)).route(id, buffer) };
 
     0
 }
@@ -142,10 +176,15 @@ impl RouterTx {
         self.0.send(RouterMsg::Quit).ok();
     }
 
-    pub fn route(&self, data: PacketBuffer) {
+    /// Queues data to be routed
+    ///
+    /// ### Arguments
+    /// * `id` - WAN id
+    /// * `data` - Packet to route
+    pub fn route(&self, id: Uuid, data: PacketBuffer) {
         match Ipv4PacketOwned::new(data) {
             Ok(pkt) => {
-                self.0.send(RouterMsg::FromWan(pkt)).ok();
+                self.0.send(RouterMsg::FromWan(id, pkt)).ok();
             }
             Err(error) => tracing::warn!("unable to route packet: {error:?}"),
         }
@@ -177,8 +216,12 @@ impl Router {
         while let Ok(msg) = rx.recv() {
             match msg {
                 RouterMsg::Quit => break,
-                RouterMsg::FromWan(pkt) => {
+                RouterMsg::FromWan(id, pkt) => {
                     let _span = tracing::info_span!("from wan").entered();
+                    if let Some(wan) = self.wans.read().get(&id) {
+                        wan.stats().rx_add(pkt.len());
+                    }
+
                     match self.route_ip4(pkt) {
                         Ok(action) => match self.handle_action(action, None) {
                             Ok(_) => (),

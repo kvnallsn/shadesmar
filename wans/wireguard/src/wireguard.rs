@@ -460,7 +460,8 @@ impl WgTunnel {
     /// * `pkt` - Mutable IPv4 packet received from WireGuard decapsulate function
     /// * `dst` - Unix (datagram) socket address of the router
     fn queue_to_router<P: MutableIpv4Packet + Debug>(&self, mut pkt: P) -> Result<()> {
-        tracing::info_span!("queue to router", id = pkt.id(), src = %pkt.src());
+        let _span =
+            tracing::info_span!("queue to router", id = pkt.id(), src = %pkt.src()).entered();
 
         if let Some(orig) = self.nat.read().get(&pkt) {
             pkt.unmasquerade(orig);
@@ -469,8 +470,15 @@ impl WgTunnel {
         }
 
         tracing::trace!("queue received packet for router: {pkt:?}");
+
+        let id = self.wan_id.as_bytes();
         let data = pkt.as_bytes();
-        (self.callback.cb)(self.callback.channel, data.as_ptr(), data.len());
+        (self.callback.cb)(
+            self.callback.channel,
+            id.as_ptr(),
+            data.as_ptr(),
+            data.len(),
+        );
         Ok(())
     }
 }
