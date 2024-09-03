@@ -113,16 +113,14 @@ impl RouterHandle {
     /// ### Arguments
     /// * `name` - Name of the wan connection
     /// * `cfg` - WAN device configuration
-    pub fn add_wan(&self, _cfg: WanConfig) -> Result<(), NetworkError> {
-        /*
+    pub fn add_wan(&self, cfg: WanConfig) -> Result<(), NetworkError> {
         let mut wan = WanHandle::new(cfg)?;
         if wan.pcap_enabled() {
             //pcap.capture_wan(wan.id());
         }
 
-        wan.start(self.tx.clone())?;
+        wan.start(self.tx.clone(), super::router_callback)?;
         self.wans.write().insert(wan.id(), wan);
-        */
 
         Ok(())
     }
@@ -132,19 +130,22 @@ impl RouterHandle {
     /// ### Arguments
     /// * `name` - Name of WAN connection to delete
     /// * `cleanup` - True to remove associated routes, false to leave them
-    pub fn del_wan<S: AsRef<str>>(&mut self, name: S, _cleanup: bool) -> Result<(), NetworkError> {
-        let _name = name.as_ref();
-        /*
-        let id = self
-            .wans
-            .find_by_name(name)
-            .ok_or_else(|| NetworkError::WanDeviceNotFound(name.to_owned()))?;
+    pub fn del_wan<S: AsRef<str>>(&mut self, name: S, cleanup: bool) -> Result<(), NetworkError> {
+        let name = name.as_ref();
+
+        let mut wans = self.wans.write();
+        let wan_id = wans
+            .iter()
+            .find_map(|(id, wan)| match wan.name() == name {
+                true => Some(*id),
+                false => None,
+            })
+            .ok_or_else(|| NetworkError::WanDeviceNotFound(String::from(name)))?;
 
         tracing::info!("stopping wan device {name}");
 
-        let mut wan = self
-            .wans
-            .remove(id)
+        let mut wan = wans
+            .remove(&wan_id)
             .ok_or_else(|| NetworkError::WanDeviceNotFound(name.to_owned()))?;
 
         wan.stop()?;
@@ -152,7 +153,6 @@ impl RouterHandle {
         if cleanup {
             self.route_table.remove_routes_by_wan(name)?;
         }
-        */
 
         Ok(())
     }
