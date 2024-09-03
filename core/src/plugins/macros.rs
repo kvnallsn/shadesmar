@@ -66,45 +66,78 @@ macro_rules! define_wan_plugin {
         /// Initializes a new WAN adapter for use with the provided name and configuration. The
         /// configuration is passed as a serialized JSON object.
         ///
-        /// ### Return
-        /// * `*const c_void`
-        ///
-        /// This function returns an opaque pointer to a handle structure.  This pointer
+        /// This function will store an opaque pointer in the `device` parameter. On succes, it
         /// can be passed to futher wan fuctions to interact with that specific device.
         /// For example, it can be passed to `wan_stop` to terminate the wan.
         ///
         /// ### Arguments
-        /// * `cfg` - JSON string containaing WAN configuration
+        /// * `cfg` - [in] JSON string containaing WAN configuration
+        /// * `device` - [out] stores the pointer to the device when the function exits
         #[no_mangle]
-        pub extern "C" fn wan_create(cfg: *const c_char) -> *mut c_void {
-            let cfg = shadesmar_core::arg!(json: shadesmar_core::plugins::WanPluginConfig::<$cfg>; data: cfg; error: std::ptr::null_mut());
+        pub extern "C" fn wan_create(cfg: *const c_char, device: *mut *mut c_void) -> i32 {
+            let cfg = shadesmar_core::arg!(json: shadesmar_core::plugins::WanPluginConfig::<$cfg>; data: cfg; error: -1);
+            shadesmar_core::arg!(checknul; device);
 
             match <$dev>::new(cfg) {
-                Ok(device) => Box::into_raw(Box::new(device)) as *mut _,
-                Err(_error) => std::ptr::null_mut(),
+                Ok(wan) => {
+                    let ptr = Box::into_raw(Box::new(wan)) as *mut _;
+                    unsafe { *device = ptr } ;
+                    0
+                }
+                Err(_error) => -1,
             }
         }
 
-        /// Starts a device, spawning a new instance with the provided settings
+        /// Starts a WAN device
+        ///
+        /// Generally, starting a new WAN device involves creating new one or more threads
+        /// to handle the upstream send/receive functionality. This function will store a
+        /// handle to the running instance in the out pointer `instance` on success that may
+        /// be used to further interact with the newly start instance.
+        ///
+        /// ### Arguments
+        /// * `device` - [in] WAN device for which to spawn an instance
+        /// * `channel` - [in] Opaque pointer to a channel structure used to communicate with the router
+        /// * `cb` - [in] Callback function that writes/queues data the router (uses `channel`)
+        /// * `instance` - [out] Stores pointer to instance on success
         #[no_mangle]
-        pub extern "C" fn wan_start(device: *mut c_void, channel: *const c_void, cb: extern fn (*const c_void, *const u8, usize) -> i32) -> *const c_void {
-            let device = shadesmar_core::arg!(ptr: $dev; data: device; error: std::ptr::null());
+        pub extern "C" fn wan_start(
+            device: *mut c_void,
+            channel: *const c_void,
+            cb: shadesmar_core::plugins::FnCallback,
+            instance: *mut *mut c_void,
+        ) -> i32 {
+            let device = shadesmar_core::arg!(ptr: $dev; data: device);
+            shadesmar_core::arg!(checknul; instance);
 
-            let handle = match device.run(channel, cb) {
-                Ok(handle) => handle,
-                Err(_error) => return std::ptr::null(),
-            };
+            match device.run(channel, cb) {
+                Ok(handle) => {
+                    let ptr = Box::into_raw(Box::new(handle));
+                    unsafe { *instance = ptr as *mut _ };
+                }
+                Err(_error) => return -1,
+            }
 
             // drop the device again, but don't return it.  we don't intend to free it yet
             Box::into_raw(device);
 
-            Box::into_raw(Box::new(handle)) as *const c_void
+            0
         }
 
-        /// Sends data to a WAN device
+        /// Writes data to a WAN device
+        ///
+        /// Attempts to write (or queue) data to a WAN device instance specified by the handle `handle`.
+        /// No assumptions may be made about the lifetime of the `data`, it is only valid for the duration
+        /// of this function. Any uses (sending to other threads/queues/etc.) MUST copy this data to ensure
+        /// it remains accessible to the WAN device.
+        ///
+        /// ### Arguments
+        /// * `handle` - [in] Opaque pointer to the WAN instance
+        /// * `data` - [in] Data to write to WAN device
+        /// * `len` - [in] Length of data buffer
         #[no_mangle]
         pub extern "C" fn wan_send(handle: *mut c_void, data: *const u8, len: usize) -> i32 {
-            let handle = shadesmar_core::arg!(ptr: $handle; data: handle; error: -1);
+            let handle = shadesmar_core::arg!(ptr: $handle; data: handle);
 
             let ret = match (data.is_null(), len) {
                 (true, _) => 0,
@@ -122,11 +155,15 @@ macro_rules! define_wan_plugin {
         }
 
         /// Attempts to stop a running device
+        ///
+        /// Calls the associated stop function on the instance's handle, requesting the instance to stop
+        ///
+        /// ### Arguments
+        /// * `handle` - [in] Opaque pointer to the WAN instance
         #[no_mangle]
         pub extern "C" fn wan_stop(handle: *mut c_void) -> i32 {
-            let handle = shadesmar_core::arg!(ptr: $handle; data: handle; error: -1);
+            let handle = shadesmar_core::arg!(ptr: $handle; data: handle);
 
-            // send SIGTERM to thread to indicate it's time to quit
             match handle.stop() {
                 Ok(ptr) => 0,
                 Err(_err) => {
@@ -136,10 +173,12 @@ macro_rules! define_wan_plugin {
             }
         }
 
-        /// Attempts to release a WAN device
+        /// Attempts to release/destroy a WAN device
+        ///
+        /// Will free memory associated with the WAN device and perform any cleanup actions
         #[no_mangle]
         pub extern "C" fn wan_destroy(device: *mut c_void) -> i32 {
-            let device = shadesmar_core::arg!(ptr: $dev; data: device; error: -1);
+            let device = shadesmar_core::arg!(ptr: $dev; data: device);
             drop(device);
             0
         }
@@ -164,14 +203,20 @@ macro_rules! define_wan_plugin {
 /// ```
 #[macro_export]
 macro_rules! arg {
-    (ptr: $ty:ty; data: $data:tt; error: $error:expr) => {
+    (ptr: $ty:ty; data: $data:tt) => {
         match $data.is_null() {
-            true => return $error,
+            true => return -1,
             false => {
                 // SAFETY: we check for null above. all other safety checks are the
                 // responsiblity of the caller!
                 unsafe { Box::from_raw($data as *mut $ty) }
             }
+        }
+    };
+    (checknul; $data:tt) => {
+        match $data.is_null() {
+            true => return -1,
+            false => (),
         }
     };
     (json: $ty:ty; data: $data:tt; error: $error:expr) => {
