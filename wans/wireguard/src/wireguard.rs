@@ -324,7 +324,7 @@ impl WgTunnel {
                         // read packets from router
                         for msg in router_rx.drain() {
                             match msg {
-                                WgMessage::Quit => break,
+                                WgMessage::Quit => break 'event,
                                 WgMessage::Packet(buffer) => {
                                     match self.handle_router_recv(buffer, &mut cache) {
                                         Ok(_) => (),
