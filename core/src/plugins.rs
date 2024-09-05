@@ -61,6 +61,13 @@ pub struct WanInstance {
     channel: *mut c_void,
 }
 
+/// Wrapper around the callback to the router
+#[repr(C)]
+pub struct WanCallback {
+    channel: *const c_void,
+    cb: FnCallback,
+}
+
 /// Contains references to all loaded plugin libraries
 pub struct WanPlugins {
     libs: HashMap<String, Library>,
@@ -250,6 +257,29 @@ impl WanPlugins {
     }
 }
 
+impl WanCallback {
+    /// Creates a new callback wrapper to use with FFI
+    ///
+    /// ### Arguments
+    /// * `router` - Pointer to router's channel / transmitter
+    /// * `cb` - Pointer to callback function
+    pub fn new(router: *const c_void, cb: FnCallback) -> Self {
+        Self {
+            channel: router,
+            cb,
+        }
+    }
+
+    /// Executes the wrapped callback function
+    ///
+    /// ### Arguments
+    /// * `data` - Data to pass to the callback function
+    pub fn exec(&self, id: Uuid, data: &[u8]) {
+        let id = id.as_bytes();
+        (self.cb)(self.channel, id.as_ptr(), data.as_ptr(), data.len());
+    }
+}
+
 // SAFETY:
 // Both `WandDevice` and `WanInstance` represent opaque pointers to
 // structures allocated by plugins. They are never accessed except from
@@ -258,3 +288,4 @@ unsafe impl Send for WanDevice {}
 unsafe impl Sync for WanDevice {}
 unsafe impl Send for WanInstance {}
 unsafe impl Sync for WanInstance {}
+unsafe impl Send for WanCallback {}

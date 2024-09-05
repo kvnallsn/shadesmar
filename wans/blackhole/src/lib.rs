@@ -1,11 +1,8 @@
-use std::{
-    ffi::{c_char, c_void},
-    thread::JoinHandle,
-};
+use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
 use shadesmar_core::{
-    plugins::{FnCallback, WanPluginConfig},
+    plugins::{WanCallback, WanPluginConfig},
     types::buffers::{PacketBuffer, PacketBufferPool},
 };
 use uuid::Uuid;
@@ -28,7 +25,6 @@ pub struct BlackholeInstance {
 pub struct BlackholeHandle {
     id: Uuid,
     channel: flume::Sender<BlackholeMessage>,
-    router: *const c_void,
     thread: JoinHandle<()>,
 }
 
@@ -49,7 +45,7 @@ impl BlackholeDevice {
         Ok(BlackholeDevice { id: cfg.id })
     }
 
-    pub fn run(&self, channel: *const c_void, _cb: FnCallback) -> anyhow::Result<BlackholeHandle> {
+    pub fn run(&self, _cb: WanCallback) -> anyhow::Result<BlackholeHandle> {
         let (tx, rx) = flume::unbounded();
         let instance = BlackholeInstance::new(rx)?;
 
@@ -63,7 +59,6 @@ impl BlackholeDevice {
         Ok(BlackholeHandle {
             id: self.id,
             channel: tx,
-            router: channel,
             thread,
         })
     }
@@ -97,11 +92,11 @@ impl BlackholeHandle {
         self.channel.send(BlackholeMessage::Data(buffer)).ok();
     }
 
-    pub fn stop(self) -> anyhow::Result<*const c_void> {
+    pub fn stop(self) -> anyhow::Result<()> {
         let _span = tracing::info_span!("blackhole handle stop", wan_id = %self.id).entered();
 
         self.channel.send(BlackholeMessage::Quit).ok();
         self.thread.join().ok();
-        Ok(self.router)
+        Ok(())
     }
 }

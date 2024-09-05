@@ -2,7 +2,6 @@
 
 use std::{
     collections::HashMap,
-    ffi::c_void,
     fmt::Debug,
     io::ErrorKind,
     net::{Ipv4Addr, SocketAddr},
@@ -28,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use shadesmar_core::{
     ipv4::{Ipv4Packet, Ipv4PacketMut, Ipv4PacketOwned, MutableIpv4Packet},
     nat::NatTable,
-    plugins::{FnCallback, WanPluginConfig},
+    plugins::{WanCallback, WanPluginConfig},
     types::{
         buffers::{PacketBuffer, PacketBufferPool},
         Ipv4Network,
@@ -50,14 +49,8 @@ pub enum WgMessage {
 
 pub struct WgHandle {
     channel: flume::Sender<WgMessage>,
-    router: *const c_void,
     waker: mio::Waker,
     thread: JoinHandle<()>,
-}
-
-pub struct WgCallbackChannel {
-    channel: *const c_void,
-    cb: FnCallback,
 }
 
 pub type PacketCache = HashMap<u16, Ipv4PacketOwned>;
@@ -107,7 +100,7 @@ pub struct WgTunnel {
     nat: RwLock<NatTable>,
 
     /// Sends packets back to router
-    callback: WgCallbackChannel,
+    callback: WanCallback,
 
     /// UDP socket to send/recv encapsulated
     udp: UdpSocket,
@@ -149,12 +142,10 @@ impl WgDevice {
     }
 
     /// Spawns a new thread to run this device, returining an (opaque?) handle to the device info block
-    pub fn run(&self, channel: *const c_void, cb: FnCallback) -> Result<WgHandle> {
+    pub fn run(&self, callback: WanCallback) -> Result<WgHandle> {
         let poll = Poll::new()?;
         let (tx, rx) = flume::unbounded();
         let waker = mio::Waker::new(poll.registry(), TOKEN_ROUTER)?;
-
-        let callback = WgCallbackChannel { channel, cb };
 
         let tun = WgTunnel::new(
             self.id,
@@ -176,7 +167,6 @@ impl WgDevice {
 
         Ok(WgHandle {
             channel: tx,
-            router: channel,
             waker,
             thread,
         })
@@ -199,7 +189,7 @@ impl WgTunnel {
         peer: PublicKey,
         endpoint: SocketAddr,
         poll: Poll,
-        callback: WgCallbackChannel,
+        callback: WanCallback,
     ) -> Result<Self> {
         let tun = Tunn::new(key, peer, None, None, 1, None).map_err(|e| anyhow!(e))?;
         let nat = RwLock::new(NatTable::new());
@@ -470,15 +460,8 @@ impl WgTunnel {
         }
 
         tracing::trace!("queue received packet for router: {pkt:?}");
+        self.callback.exec(self.wan_id, pkt.as_bytes());
 
-        let id = self.wan_id.as_bytes();
-        let data = pkt.as_bytes();
-        (self.callback.cb)(
-            self.callback.channel,
-            id.as_ptr(),
-            data.as_ptr(),
-            data.len(),
-        );
         Ok(())
     }
 }
@@ -491,13 +474,10 @@ impl WgHandle {
         self.waker.wake().ok();
     }
 
-    pub fn stop(self) -> Result<*const c_void> {
+    pub fn stop(self) -> Result<()> {
         self.channel.send(WgMessage::Quit).ok();
         self.waker.wake().ok();
         self.thread.join().ok();
-
-        Ok(self.router)
+        Ok(())
     }
 }
-
-unsafe impl Send for WgCallbackChannel {}

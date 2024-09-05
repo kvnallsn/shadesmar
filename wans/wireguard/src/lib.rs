@@ -1,5 +1,3 @@
-use std::ffi::{c_char, c_void};
-
 use wireguard::{WgConfig, WgDevice, WgHandle};
 
 mod wireguard;

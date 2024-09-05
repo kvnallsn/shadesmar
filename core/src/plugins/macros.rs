@@ -74,7 +74,12 @@ macro_rules! define_wan_plugin {
         /// * `cfg` - [in] JSON string containaing WAN configuration
         /// * `device` - [out] stores the pointer to the device when the function exits
         #[no_mangle]
-        pub extern "C" fn wan_create(cfg: *const c_char, device: *mut *mut c_void) -> i32 {
+        pub extern "C" fn wan_create(
+            cfg: *const std::ffi::c_char,
+            device: *mut *mut std::ffi::c_void
+        ) -> i32 {
+            let _span = tracing::error_span!("wan_start").entered();
+
             let cfg = shadesmar_core::arg!(json: shadesmar_core::plugins::WanPluginConfig::<$cfg>; data: cfg; error: -1);
             shadesmar_core::arg!(checknul; device);
 
@@ -84,7 +89,10 @@ macro_rules! define_wan_plugin {
                     unsafe { *device = ptr } ;
                     0
                 }
-                Err(_error) => -1,
+                Err(error) => {
+                    tracing::error!("unable to start wan: {error:?}");
+                    -1
+                }
             }
         }
 
@@ -102,20 +110,27 @@ macro_rules! define_wan_plugin {
         /// * `instance` - [out] Stores pointer to instance on success
         #[no_mangle]
         pub extern "C" fn wan_start(
-            device: *mut c_void,
-            channel: *const c_void,
-            cb: shadesmar_core::plugins::FnCallback,
-            instance: *mut *mut c_void,
+            device: *mut std::ffi::c_void,
+            channel: *mut std::ffi::c_void,
+            callback_fn: shadesmar_core::plugins::FnCallback,
+            instance: *mut *mut std::ffi::c_void,
         ) -> i32 {
+            let _span = tracing::error_span!("wan_start").entered();
+
             let device = shadesmar_core::arg!(ptr: $dev; data: device);
             shadesmar_core::arg!(checknul; instance);
 
-            match device.run(channel, cb) {
+            let callback = shadesmar_core::plugins::WanCallback::new(channel, callback_fn);
+
+            match device.run(callback) {
                 Ok(handle) => {
                     let ptr = Box::into_raw(Box::new(handle));
                     unsafe { *instance = ptr as *mut _ };
                 }
-                Err(_error) => return -1,
+                Err(error) => {
+                    tracing::error!("unable to start wan: {error:?}");
+                    return -1;
+                }
             }
 
             // drop the device again, but don't return it.  we don't intend to free it yet
@@ -136,7 +151,11 @@ macro_rules! define_wan_plugin {
         /// * `data` - [in] Data to write to WAN device
         /// * `len` - [in] Length of data buffer
         #[no_mangle]
-        pub extern "C" fn wan_send(handle: *mut c_void, data: *const u8, len: usize) -> i32 {
+        pub extern "C" fn wan_send(
+            handle: *mut std::ffi::c_void,
+            data: *const u8,
+            len: usize
+        ) -> i32 {
             let handle = shadesmar_core::arg!(ptr: $handle; data: handle);
 
             let ret = match (data.is_null(), len) {
@@ -161,11 +180,11 @@ macro_rules! define_wan_plugin {
         /// ### Arguments
         /// * `handle` - [in] Opaque pointer to the WAN instance
         #[no_mangle]
-        pub extern "C" fn wan_stop(handle: *mut c_void) -> i32 {
+        pub extern "C" fn wan_stop(handle: *mut std::ffi::c_void) -> i32 {
             let handle = shadesmar_core::arg!(ptr: $handle; data: handle);
 
             match handle.stop() {
-                Ok(ptr) => 0,
+                Ok(_) => 0,
                 Err(_err) => {
                     tracing::warn!("unable to stop {} handle", $name);
                     -1
@@ -177,7 +196,7 @@ macro_rules! define_wan_plugin {
         ///
         /// Will free memory associated with the WAN device and perform any cleanup actions
         #[no_mangle]
-        pub extern "C" fn wan_destroy(device: *mut c_void) -> i32 {
+        pub extern "C" fn wan_destroy(device: *mut std::ffi::c_void) -> i32 {
             let device = shadesmar_core::arg!(ptr: $dev; data: device);
             drop(device);
             0
