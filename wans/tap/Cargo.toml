@@ -1,0 +1,19 @@
+[package]
+name = "tap"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+anyhow = { workspace = true }
+flume = { workspace = true }
+mio = { workspace = true }
+nix = { workspace = true }
+parking_lot = { workspace = true }
+serde = { workspace = true }
+shadesmar-core = { path = "../../core" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }

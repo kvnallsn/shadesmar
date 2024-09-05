@@ -1241,6 +1241,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flume",
+ "mio",
+ "nix 0.29.0",
+ "parking_lot",
+ "serde",
+ "shadesmar-core",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "tempfile"
 version = "3.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
