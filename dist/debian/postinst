@@ -1,0 +1,14 @@
+#!/bin/bash
+
+## create a shadesmar user group
+groupadd shadesmar
+
+## create the virtual machine directory
+mkdir -p /var/run/shadesmar
+mkdir -p /var/lib/shadesmar/networks
+mkdir -p /var/lib/shadesmar/plugins
+
+## set ownership on files and directories
+chown root:shadesmar /etc/shadesmar.yml
+chown -R root:shadesmar /var/run/shadesmar
+chown -R root:shadesmar /var/lib/shadesmar

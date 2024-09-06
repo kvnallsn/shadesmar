@@ -1,0 +1,16 @@
+# Directory to store runtime/ephemeral files
+# Examples: sockets, pids files, etc.
+run: /var/run/shadesmar
+
+# Directory to store persistent files
+# Examples: networks (config, pcap, etc.), plugins
+#
+# Structure:
+# - /plugins - where to source WAN plugins from
+# - /networks/<name> - location to store all network related files
+data: /var/lib/shadesmar
+
+# List of all plugins to use
+plugins:
+  blackhole: libblackhole.so
+  wireguard: libwireguard.so

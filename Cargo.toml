@@ -1,5 +1,13 @@
 [workspace]
-members = ["bridge", "core", "vhost", ".", "wans/blackhole", "wans/wireguard", "wans/tap"]
+members = [
+    "bridge",
+    "core",
+    "vhost",
+    ".",
+    "wans/blackhole",
+    "wans/wireguard",
+    "wans/tap",
+]
 resolver = "2"
 
 [workspace.dependencies]
@@ -41,8 +49,44 @@ lto = "fat"
 name = "shadesmar"
 version = "0.1.0"
 edition = "2021"
-authors = ["Trike"]
+authors = ["Kevin Allison <kevin@allisn.net>"]
 description = "A qemu/libvirt networking obfuscation driver"
+license-file = "LICENSE.txt"
+
+[package.metadata.deb]
+copyright = "2024, Kevin Allison <kevin@allisn.net>"
+depends = "$auto"
+maintainer-scripts = "dist/debian"
+recommends = ["qemu-system", "qemu-system-x86"]
+revision = "1"
+section = "net"
+assets = [
+    [
+        "target/release/shadesmar",
+        "usr/bin/",
+        "775",
+    ],
+    [
+        "target/release/libblackhole.so",
+        "var/lib/shadesmar/plugins/",
+        "775",
+    ],
+    [
+        "target/release/libtap.so",
+        "var/lib/shadesmar/plugins/",
+        "775",
+    ],
+    [
+        "target/release/libwireguard.so",
+        "var/lib/shadesmar/plugins/",
+        "0775",
+    ],
+    [
+        "README.md",
+        "usr/share/doc/shadesmar/REAMDE",
+        "644",
+    ],
+]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -52,7 +96,7 @@ dialoguer = { version = "0.11" }
 jiff = { workspace = true }
 serde = { workspace = true }
 shadesmar-bridge = { path = "bridge" }
-shadesmar-core= { path = "core" }
+shadesmar-core = { path = "core" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
