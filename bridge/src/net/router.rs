@@ -151,8 +151,7 @@ pub extern "C" fn router_callback(
 
     // We cannot assume how long the data will valid (except for the duration of this function)
     // so we'll copy it into one of our buffers
-    let mut buffer = PacketBufferPool::get();
-    buffer.extend_from_slice(data);
+    let buffer = PacketBufferPool::copy(data);
 
     // SAFETY: we checked above to ensure the pointer was not null
     //

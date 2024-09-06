@@ -48,9 +48,6 @@ macro_rules! define_wan_plugin {
 
             shadesmar_core::init_tracinig(cfg.log_level);
 
-            // initialize the packet buffer pool (if not already done)
-            shadesmar_core::types::buffers::PacketBufferPool::load();
-
             tracing::info!(
                 "[{}] initialized plugin (log level: {})",
                 $name,
@@ -79,6 +76,9 @@ macro_rules! define_wan_plugin {
             device: *mut *mut std::ffi::c_void
         ) -> i32 {
             let _span = tracing::error_span!("wan_start").entered();
+
+            // initialize the packet buffer pool (if not already done)
+            shadesmar_core::types::buffers::PacketBufferPool::init(1600, 1024);
 
             let cfg = shadesmar_core::arg!(json: shadesmar_core::plugins::WanPluginConfig::<$cfg>; data: cfg; error: -1);
             shadesmar_core::arg!(checknul; device);

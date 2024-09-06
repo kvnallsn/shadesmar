@@ -468,8 +468,7 @@ impl WgTunnel {
 
 impl WgHandle {
     pub fn write(&self, data: &[u8]) {
-        let mut buffer = PacketBufferPool::get();
-        buffer.extend_from_slice(data);
+        let buffer = PacketBufferPool::copy(data);
         self.channel.send(WgMessage::Packet(buffer)).ok();
         self.waker.wake().ok();
     }

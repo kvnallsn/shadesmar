@@ -117,7 +117,7 @@ impl BridgeBuilder {
         let _enter = span.enter();
 
         tracing::debug!("initializing packet buffers");
-        PacketBufferPool::load();
+        PacketBufferPool::init(1600, 1024);
 
         tracing::info!("configuring {name} network");
 

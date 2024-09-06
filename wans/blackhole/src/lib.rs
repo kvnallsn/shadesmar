@@ -87,8 +87,7 @@ impl BlackholeHandle {
     pub fn write(&self, data: &[u8]) {
         let _span = tracing::info_span!("blackhole handle write", wan_id = %self.id).entered();
 
-        let mut buffer = PacketBufferPool::get();
-        buffer.extend_from_slice(data);
+        let buffer = PacketBufferPool::copy(data);
         self.channel.send(BlackholeMessage::Data(buffer)).ok();
     }
 

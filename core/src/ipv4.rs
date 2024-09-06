@@ -457,10 +457,9 @@ impl<'a> Ipv4Packet for Ipv4PacketRef<'a> {
     }
 
     fn to_owned(self) -> Ipv4PacketOwned {
-        let mut data = PacketBufferPool::get();
-        data.extend_from_slice(&self.data);
-
-        Ipv4PacketOwned { data }
+        Ipv4PacketOwned {
+            data: PacketBufferPool::copy(&self.data),
+        }
     }
 }
 
@@ -470,10 +469,9 @@ impl<'a> Ipv4Packet for Ipv4PacketMut<'a> {
     }
 
     fn to_owned(self) -> Ipv4PacketOwned {
-        let mut data = PacketBufferPool::get();
-        data.extend_from_slice(&self.data);
-
-        Ipv4PacketOwned { data }
+        Ipv4PacketOwned {
+            data: PacketBufferPool::copy(&self.data),
+        }
     }
 }
 

@@ -7,6 +7,8 @@ use std::{
 
 use parking_lot::Mutex;
 
+static PACKET_BUFFERS: OnceLock<PacketBufferPool> = OnceLock::new();
+
 /// A pool of pre-allocated buffers to store packet data
 ///
 /// The intent of the pool is to avoid costly allocations when
@@ -27,18 +29,25 @@ pub struct PacketBuffer {
 }
 
 impl PacketBufferPool {
-    /// Returns a refererence to the packet buffer pool
-    pub fn load() -> &'static PacketBufferPool {
-        static PACKET_BUFFERS: OnceLock<PacketBufferPool> = OnceLock::new();
-        PACKET_BUFFERS.get_or_init(|| PacketBufferPool::default())
+    /// Initializes the packet buffer buffer or does nothing if it's already initialized
+    ///
+    /// ### Arguments
+    /// * `capacity` - Capacity (in bytes) of each vector in the pool
+    /// * `count` - Number of vectors to pre-allocate
+    pub fn init(capacity: usize, count: usize) {
+        PACKET_BUFFERS.get_or_init(|| {
+            tracing::trace!(
+                "allocating new packet buffer pool (capacity: {capacity}, count = {count})"
+            );
+            PacketBufferPool::new(capacity, count)
+        });
     }
 
-    /// Creates a PacketBuffer pool with default settings
-    ///
-    /// Capacity: 1600 bytes
-    /// Pre-Allocated Buffers: 1024
-    pub fn default() -> Self {
-        Self::new(1600, 1024)
+    /// Returns a reference to the PacketBufferPool or panics if it was not initialized
+    fn pool() -> &'static PacketBufferPool {
+        PACKET_BUFFERS
+            .get()
+            .expect("packet buffer pool is not initialized")
     }
 
     /// Creates a PacketBuffer pool with the provided values
@@ -58,7 +67,7 @@ impl PacketBufferPool {
 
     /// Returns the number of pre-allocated buffers currently available
     pub fn available() -> usize {
-        Self::load().buffers.lock().len()
+        Self::pool().buffers.lock().len()
     }
 
     /// Returns a new PacketBuffer to use to store data
@@ -70,7 +79,7 @@ impl PacketBufferPool {
     /// If the buffer needs space available now (i.e., for a call to `read()`), use
     /// `PacketBuffers::with_size(sz)` instead!
     pub fn get() -> PacketBuffer {
-        let pbs = PacketBufferPool::load();
+        let pbs = PacketBufferPool::pool();
         let vec = match pbs.buffers.lock().pop() {
             Some(vec) => vec,
             None => {
@@ -81,6 +90,7 @@ impl PacketBufferPool {
 
         PacketBuffer { buffer: Some(vec) }
     }
+
     /// Returns a new PacketBuffer to use to store data
     ///
     /// This function will either return an unused buffer from it's internal store
@@ -103,6 +113,17 @@ impl PacketBufferPool {
             buf.capacity()
         );
 
+        buf
+    }
+
+    /// Copies data into a new PacketBuffer and returns the PacketBuffer
+    ///
+    /// ### Arguments
+    /// * `data` - Data to copy into buffer
+    pub fn copy<D: AsRef<[u8]>>(data: D) -> PacketBuffer {
+        let data = data.as_ref();
+        let mut buf = Self::get();
+        buf.extend_from_slice(data);
         buf
     }
 }
@@ -154,7 +175,7 @@ impl Drop for PacketBuffer {
 
             v.clear();
 
-            let pbs = PacketBufferPool::load();
+            let pbs = PacketBufferPool::pool();
             pbs.buffers.lock().push(v);
         }
     }

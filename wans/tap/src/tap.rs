@@ -177,9 +177,7 @@ impl Debug for TapDevice {
 
 impl TapHandle {
     pub fn write(&self, data: &[u8]) {
-        let mut buffer = PacketBufferPool::get();
-        buffer.extend_from_slice(data);
-
+        let buffer = PacketBufferPool::copy(data);
         self.send_message(TapMessage::Data(buffer));
     }
 
