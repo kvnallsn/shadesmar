@@ -52,6 +52,27 @@ impl EthernetFrame {
         })
     }
 
+    /// Parses an ethernet frame from a byte slice/buffer. Returns an error if
+    /// not enough data was passed to constitute an ethernet frame (14 bytes).
+    ///
+    /// ### Arguments
+    /// * `frame` - Buffer containing ethernet frame at index 0
+    pub fn parse(frame: &[u8]) -> Result<Self, ProtocolError> {
+        if frame.len() < 14 {
+            return Err(ProtocolError::NotEnoughData(frame.len(), 14));
+        }
+
+        let dst = MacAddress::parse(&frame[0..6])?;
+        let src = MacAddress::parse(&frame[6..12])?;
+        let ethertype = EtherType::try_from(&frame[12..14])?;
+
+        Ok(Self {
+            dst,
+            src,
+            ethertype,
+        })
+    }
+
     pub fn size() -> usize {
         ETHERNET_FRAME_SIZE
     }
