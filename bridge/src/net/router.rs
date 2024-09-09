@@ -218,6 +218,7 @@ impl Router {
                 RouterMsg::FromWan(id, pkt) => {
                     let _span = tracing::info_span!("from wan").entered();
                     if let Some(wan) = self.wans.read().get(&id) {
+                        self.pcap.log_wan(wan.id(), pkt.as_bytes());
                         wan.stats().rx_add(pkt.len());
                     }
 
@@ -352,6 +353,8 @@ impl Router {
     /// ### Arguments
     /// * `pkt` - A layer 3 (IPv4) packet to write to the ether
     fn forward_packet(&self, pkt: Ipv4PacketOwned) -> Result<(), NetworkError> {
+        let _span = tracing::info_span!("forwarding packet", dst = %pkt.dst()).entered();
+
         let wan_id = self.table.get_route_wan_idx(pkt.dst())?;
         tracing::trace!("routing packet to {} over wan:{wan_id}", pkt.dst());
 
@@ -359,6 +362,8 @@ impl Router {
         if let Some(wan) = wans.get(&wan_id) {
             self.pcap.log_wan(wan.id(), pkt.as_bytes());
             wan.write(pkt.as_bytes()).ok();
+        } else {
+            tracing::warn!(%wan_id, "no wan found!");
         }
 
         Ok(())
