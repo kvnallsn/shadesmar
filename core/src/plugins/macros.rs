@@ -27,7 +27,7 @@
 /// ** Stops the instance, cleaning up any required memory or other allocations
 #[macro_export]
 macro_rules! define_wan_plugin {
-    ($name:expr, $cfg:ty, $dev:ty, $handle:ty) => {
+    ($name:expr, $plugin_type:expr, $cfg:ty, $dev:ty, $handle:ty) => {
         /// Initializes the plugin
         ///
         /// This is called when the plugin is loaded by shadesmar on application start and
@@ -57,6 +57,11 @@ macro_rules! define_wan_plugin {
             0
         }
 
+        /// Specifies the type of plugin
+        #[no_mangle]
+        pub extern "C" fn plugin_type() -> u8 {
+            $plugin_type as u8
+        }
 
         /// Creates a new WAN adapter
         ///

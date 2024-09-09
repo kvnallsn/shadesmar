@@ -2,7 +2,7 @@ use std::thread::JoinHandle;
 
 use serde::{Deserialize, Serialize};
 use shadesmar_core::{
-    plugins::{WanCallback, WanPluginConfig},
+    plugins::{PluginType, WanCallback, WanPluginConfig},
     types::buffers::{PacketBuffer, PacketBufferPool},
 };
 use uuid::Uuid;
@@ -35,6 +35,7 @@ pub enum BlackholeMessage {
 
 shadesmar_core::define_wan_plugin!(
     "blackhole",
+    PluginType::Wan,
     BlackholeConfig,
     BlackholeDevice,
     BlackholeHandle
