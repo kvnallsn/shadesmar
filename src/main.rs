@@ -7,7 +7,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use app::App;
 use clap::{Parser, Subcommand};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use shadesmar_bridge::config::YamlConfig;
 use shadesmar_core::{plugins::WanPluginInitOptions, types::Ipv4Network};
 
@@ -34,7 +34,7 @@ struct Opts {
 }
 
 /// Shadesmar Configuration
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct ShadesmarConfig {
     /// Path to the runtime (ephemeral) directory
     #[serde(default = "default_run_directory")]
@@ -101,11 +101,17 @@ pub enum Command {
 
 #[derive(Debug, Subcommand)]
 pub enum NetworkCommand {
+    /// Prints the configuration of a network
+    Show,
+
     /// Starts an shadesmar network
     Start,
 
     /// Prints the status of installed networks
     Status,
+
+    /// Edits the configuration file
+    Edit,
 
     /// Prints packets crossing the switch to stdout
     Netflow,

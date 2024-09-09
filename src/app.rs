@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use console::Style;
 use dialoguer::{theme::Theme, Confirm};
 use pcap::handle_pcap;
@@ -150,8 +150,10 @@ impl App {
             Command::Install { config, name } => self.install(config, name)?,
             Command::Uninstall { network, purge } => self.uninstall(network, purge)?,
             Command::Net { name: network, cmd } => match cmd {
+                NetworkCommand::Show => self.show(network)?,
                 NetworkCommand::Start => self.start(network)?,
                 NetworkCommand::Stop { force } => self.stop(network, force)?,
+                NetworkCommand::Edit => self.edit(network)?,
                 NetworkCommand::Status => self.status(network)?,
                 NetworkCommand::Netflow => self.pcap(network)?,
                 NetworkCommand::Route { cmd } => match cmd {
@@ -178,16 +180,28 @@ impl App {
     /// * `network` - Name of the network
     pub fn open_network(&self, network: String) -> anyhow::Result<Network> {
         let run_dir = self.run.join(&network);
-        let data_dir = self.data.join(&network);
+        let data_dir = self.data.join("networks").join(&network);
 
         let cfg_file = data_dir.join(&network).with_extension(SHADESMAR_CFG_EXT);
 
         if !run_dir.exists() {
-            std::fs::create_dir_all(&run_dir)?;
+            tracing::debug!("creating runtime directory: {}", run_dir.display());
+            std::fs::create_dir_all(&run_dir).with_context(|| {
+                format!(
+                    "unable to create network runtime directory: {}",
+                    run_dir.display()
+                )
+            })?;
         }
 
         if !data_dir.exists() {
-            std::fs::create_dir_all(&data_dir)?;
+            tracing::debug!("creating data directory: {}", data_dir.display());
+            std::fs::create_dir_all(&data_dir).with_context(|| {
+                format!(
+                    "unable to create network data directory: {}",
+                    data_dir.display()
+                )
+            })?;
         }
 
         Ok(Network {
@@ -288,6 +302,51 @@ impl App {
             tracing::info!(dir = %network.run_dir().display(), "purging runtime files");
             std::fs::remove_dir_all(network.run_dir()).ok();
         }
+
+        Ok(())
+    }
+
+    /// Prints a network's configuration to stdout
+    ///
+    /// ### Arguments
+    /// * `network` - Name of network
+    fn show(self, network: String) -> anyhow::Result<()> {
+        use shadesmar_bridge::BridgeConfig;
+        let network = self.open_network(network)?;
+
+        // deserialize and re-serialize to ensure config is valid
+        tracing::debug!(path = %network.cfg_file().display(), "loading network configuration");
+        let cfg = BridgeConfig::load(network.cfg_file())
+            .context("unable to load network configuration")?;
+
+        let cfg_str = cfg.to_yaml()?;
+
+        println!("# {} configuration", network.name());
+        println!("");
+        println!("{cfg_str}");
+
+        Ok(())
+    }
+
+    /// Opens a network configuration file in the system's default editor
+    ///
+    /// ### Arguments
+    /// * `network` - Name of network
+    fn edit(self, network: String) -> anyhow::Result<()> {
+        use dialoguer::Editor;
+        use shadesmar_bridge::BridgeConfig;
+
+        let network = self.open_network(network)?;
+
+        // deserialize and re-serialize to ensure config is valid
+        let cfg = std::fs::read_to_string(network.cfg_file())?;
+        let new_cfg = Editor::new()
+            .edit(&cfg)?
+            .ok_or_else(|| anyhow!("failed to get new config from editor"))?;
+
+        BridgeConfig::validate(&new_cfg)?;
+
+        std::fs::write(network.cfg_file(), &new_cfg)?;
 
         Ok(())
     }

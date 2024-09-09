@@ -12,6 +12,8 @@ use crate::config::dhcp::DhcpConfig;
 
 pub trait YamlConfig: Sized {
     fn read_yaml_from_file(path: &Path) -> io::Result<Self>;
+
+    fn to_yaml(&self) -> serde_yaml::Result<String>;
 }
 
 /// Shadesmar network configuration
@@ -69,15 +71,30 @@ impl Config {
             serde_yaml::from_reader(f).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
         Ok(cfg)
     }
+
+    /// Validates a config by attempting to serialize it
+    ///
+    /// ### Arguments
+    /// * `cfg` - Configuration to validate
+    pub fn validate<S: AsRef<str>>(cfg: S) -> io::Result<()> {
+        let _cfg: Config = serde_yaml::from_str(cfg.as_ref())
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+        Ok(())
+    }
 }
 
 impl<T> YamlConfig for T
 where
-    T: DeserializeOwned,
+    T: DeserializeOwned + Serialize,
 {
     fn read_yaml_from_file(path: &Path) -> io::Result<Self> {
         let file = File::open(path)?;
         let cfg: T = serde_yaml::from_reader(file).map_err(|e| io::Error::other(e))?;
         Ok(cfg)
+    }
+
+    fn to_yaml(&self) -> serde_yaml::Result<String> {
+        serde_yaml::to_string(self)
     }
 }
