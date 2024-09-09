@@ -99,6 +99,12 @@ impl MacAddress {
     }
 }
 
+impl From<[u8; 6]> for MacAddress {
+    fn from(mac: [u8; 6]) -> Self {
+        Self(mac)
+    }
+}
+
 impl TryFrom<&[i8]> for MacAddress {
     type Error = ProtocolError;
 
