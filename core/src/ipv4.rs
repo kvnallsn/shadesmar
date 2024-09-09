@@ -215,35 +215,38 @@ pub trait MutableIpv4Packet: Ipv4Packet {
     ///
     /// ### Arguments
     /// * `ip` - New src ip address
-    fn masquerade(&mut self, ip: Ipv4Addr) {
+    fn masquerade(&mut self, ip: Ipv4Addr, offload: bool) {
         let b = self.as_mut();
         b[12..16].copy_from_slice(&u32::from(ip).to_be_bytes());
 
-        self.fix_checksum();
+        self.fix_checksum(offload);
     }
 
     /// Sets the destination ip address to the provided value and recomputes the header checksum
     ///
     /// ### Arguments
     /// * `ip` - New destinaton ip address
-    fn unmasquerade(&mut self, ip: Ipv4Addr) {
+    fn unmasquerade(&mut self, ip: Ipv4Addr, offload: bool) {
         let b = self.as_mut();
         b[16..20].copy_from_slice(&u32::from(ip).to_be_bytes());
 
-        self.fix_checksum();
+        self.fix_checksum(offload);
     }
 
     /// Recomputes the checksum for the IPv4 header + follow-on headers
     ///
     /// Note: only tcp/udp L4 headers are currently handled
-    fn fix_checksum(&mut self) {
+    fn fix_checksum(&mut self, offload: bool) {
         let b = self.as_mut();
 
         b[10..12].copy_from_slice(&[0x00, 0x00]);
         let csum = crate::checksum(&b[0..20]);
         b[10..12].copy_from_slice(&csum.to_be_bytes());
 
-        self.fix_transport_checksum();
+        match offload {
+            true => self.compute_partial_ph_checksum(),
+            false => self.fix_transport_checksum(),
+        }
     }
 
     /// Clears the flags iset on this packet
@@ -278,6 +281,37 @@ pub trait MutableIpv4Packet: Ipv4Packet {
 
         payload[s..e].copy_from_slice(&[0, 0]);
         let sum = ph_checksum(src, dst, proto, payload);
+        payload[s..e].copy_from_slice(&sum.to_be_bytes());
+    }
+
+    fn compute_partial_ph_checksum(&mut self) {
+        let src = self.src();
+        let dst = self.dst();
+        let proto = self.protocol();
+        let payload = self.payload_mut();
+
+        let (s, e) = match proto {
+            NET_PROTOCOL_TCP => (16, 18),
+            NET_PROTOCOL_UDP => (6, 8),
+            _ => {
+                // no need to fixup anything
+                return;
+            }
+        };
+
+        let mut sum = 0;
+        let ip = src.octets();
+        sum += u32::from_be_bytes([0x00, 0x00, ip[2], ip[3]]);
+        sum += u32::from_be_bytes([0x00, 0x00, ip[0], ip[1]]);
+        let ip = dst.octets();
+        sum += u32::from_be_bytes([0x00, 0x00, ip[2], ip[3]]);
+        sum += u32::from_be_bytes([0x00, 0x00, ip[0], ip[1]]);
+        sum += u32::from(proto);
+
+        let len = payload.len();
+        sum += len as u32;
+        let sum = ((sum & 0xFFFF) + ((sum >> 16) & 0xFFFF)) as u16;
+
         payload[s..e].copy_from_slice(&sum.to_be_bytes());
     }
 }
@@ -625,7 +659,7 @@ mod tests {
         let _span = init_tracing("fixup_tcp_checksum");
 
         let mut pkt = read_file("data/checksum.bin");
-        pkt.unmasquerade(Ipv4Addr::from([10, 10, 10, 10]));
+        pkt.unmasquerade(Ipv4Addr::from([10, 10, 10, 10]), false);
         let payload = pkt.payload();
         let tcp_csum = u16::from_be_bytes([payload[16], payload[17]]);
         assert_eq!(tcp_csum, 0xE6E7, "checksum mismatch");

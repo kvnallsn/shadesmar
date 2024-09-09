@@ -376,7 +376,7 @@ impl WgTunnel {
 
         let mut pkt = Ipv4PacketMut::new(&mut buffer)?;
         self.nat.write().insert(&pkt);
-        pkt.masquerade(self.ipv4);
+        pkt.masquerade(self.ipv4, false);
 
         let action = self.tun.encapsulate(pkt.as_bytes(), &mut udp_buf);
         self.handle_tun_result(action, cache)?;
@@ -454,7 +454,7 @@ impl WgTunnel {
             tracing::info_span!("queue to router", id = pkt.id(), src = %pkt.src()).entered();
 
         if let Some(orig) = self.nat.read().get(&pkt) {
-            pkt.unmasquerade(orig);
+            pkt.unmasquerade(orig, false);
         } else {
             tracing::warn!("no nat entry for packet: (pkt: {pkt:?})");
         }
