@@ -25,7 +25,7 @@ use nix::sys::{
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use shadesmar_core::{
-    ipv4::{Ipv4Packet, Ipv4PacketMut, Ipv4PacketOwned, MutableIpv4Packet},
+    ipv4::{ChecksumFlags, Ipv4Packet, Ipv4PacketMut, Ipv4PacketOwned, MutableIpv4Packet},
     nat::NatTable,
     plugins::{WanCallback, WanPluginConfig},
     types::{
@@ -376,7 +376,7 @@ impl WgTunnel {
 
         let mut pkt = Ipv4PacketMut::new(&mut buffer)?;
         self.nat.write().insert(&pkt);
-        pkt.masquerade(self.ipv4, false);
+        pkt.masquerade(self.ipv4, ChecksumFlags::Full);
 
         let action = self.tun.encapsulate(pkt.as_bytes(), &mut udp_buf);
         self.handle_tun_result(action, cache)?;
@@ -454,7 +454,7 @@ impl WgTunnel {
             tracing::info_span!("queue to router", id = pkt.id(), src = %pkt.src()).entered();
 
         if let Some(orig) = self.nat.read().get(&pkt) {
-            pkt.unmasquerade(orig, false);
+            pkt.unmasquerade(orig, ChecksumFlags::Full);
         } else {
             tracing::warn!("no nat entry for packet: (pkt: {pkt:?})");
         }

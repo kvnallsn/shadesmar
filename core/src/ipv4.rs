@@ -58,6 +58,13 @@ pub struct Ipv4PacketOwned {
     data: PacketBuffer,
 }
 
+/// Controls whether the checksum computed should be the
+/// full checksum, or partial (if CSUM_OFFLOAD is set)
+pub enum ChecksumFlags {
+    Full,
+    Partial,
+}
+
 pub trait Ipv4Packet {
     /// Returns a reference underlying byte buffer (including the IPv4 header)
     fn as_bytes(&self) -> &[u8];
@@ -213,37 +220,45 @@ pub trait MutableIpv4Packet: Ipv4Packet {
 
     /// Sets the source ip address to the provided value and recomputes the header checksum
     ///
+    /// The `csum` argument controls whether or not to fixup the full ip psuedo-header checksum
+    /// (for TCP/UDP) or the partial checksum, if checksum offloading is enabled.
+    ///
     /// ### Arguments
     /// * `ip` - New src ip address
-    fn masquerade(&mut self, ip: Ipv4Addr, offload: bool) {
+    /// * `csum` - Controls computation of checksum
+    fn masquerade(&mut self, ip: Ipv4Addr, csum: ChecksumFlags) {
         let b = self.as_mut();
         b[12..16].copy_from_slice(&u32::from(ip).to_be_bytes());
 
-        self.fix_checksum(offload);
+        self.fix_checksum(csum);
     }
 
     /// Sets the destination ip address to the provided value and recomputes the header checksum
     ///
+    /// The `csum` argument controls whether or not to fixup the full ip psuedo-header checksum
+    /// (for TCP/UDP) or the partial checksum, if checksum offloading is enabled.
+    ///
     /// ### Arguments
     /// * `ip` - New destinaton ip address
-    fn unmasquerade(&mut self, ip: Ipv4Addr, offload: bool) {
+    /// * `csum` - Controls computation of checksum
+    fn unmasquerade(&mut self, ip: Ipv4Addr, csum: ChecksumFlags) {
         let b = self.as_mut();
         b[16..20].copy_from_slice(&u32::from(ip).to_be_bytes());
 
-        self.fix_checksum(offload);
+        self.fix_checksum(csum);
     }
 
     /// Recomputes the checksum for the IPv4 header + follow-on headers
     ///
     /// Note: only tcp/udp L4 headers are currently handled
-    fn fix_checksum(&mut self, offload: bool) {
+    fn fix_checksum(&mut self, flags: ChecksumFlags) {
         let b = self.as_mut();
 
         b[10..12].copy_from_slice(&[0x00, 0x00]);
         let csum = crate::csum::checksum(&b[0..20]);
         b[10..12].copy_from_slice(&csum.to_be_bytes());
 
-        self.fix_transport_checksum(offload);
+        self.fix_transport_checksum(flags);
     }
 
     /// Clears the flags iset on this packet
@@ -261,11 +276,8 @@ pub trait MutableIpv4Packet: Ipv4Packet {
 
     /// TCP and UDP both use a pseudo-ip header in their checksum fields
     /// so we'll need to update the TCP/UDP checksum (if necessary)
-    fn fix_transport_checksum(&mut self, partial: bool) {
-        let src = self.src();
-        let dst = self.dst();
+    fn fix_transport_checksum(&mut self, flags: ChecksumFlags) {
         let proto = self.protocol();
-        let payload = self.payload_mut();
 
         let (s, e) = match proto {
             NET_PROTOCOL_TCP => (16, 18),
@@ -276,10 +288,14 @@ pub trait MutableIpv4Packet: Ipv4Packet {
             }
         };
 
+        let src = self.src();
+        let dst = self.dst();
+        let payload = self.payload_mut();
+
         payload[s..e].copy_from_slice(&[0, 0]);
-        let sum = match partial {
-            true => crate::csum::ph_partial_checksum(src, dst, proto, payload),
-            false => crate::csum::ph_full_checksum(src, dst, proto, payload),
+        let sum = match flags {
+            ChecksumFlags::Partial => crate::csum::ph_partial_checksum(src, dst, proto, payload),
+            ChecksumFlags::Full => crate::csum::ph_full_checksum(src, dst, proto, payload),
         };
         payload[s..e].copy_from_slice(&sum.to_be_bytes());
     }
@@ -628,7 +644,10 @@ mod tests {
         let _span = init_tracing("fixup_tcp_checksum");
 
         let mut pkt = read_file("data/checksum.bin");
-        pkt.unmasquerade(Ipv4Addr::from([10, 10, 10, 10]), false);
+        pkt.unmasquerade(
+            Ipv4Addr::from([10, 10, 10, 10]),
+            crate::ipv4::ChecksumFlags::Full,
+        );
         let payload = pkt.payload();
         let tcp_csum = u16::from_be_bytes([payload[16], payload[17]]);
         assert_eq!(tcp_csum, 0xE6E7, "checksum mismatch");

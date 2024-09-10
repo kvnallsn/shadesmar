@@ -19,7 +19,7 @@ use nix::{
 };
 use serde::{Deserialize, Serialize};
 use shadesmar_core::{
-    ipv4::{Ipv4Packet, Ipv4PacketMut, MutableIpv4Packet},
+    ipv4::{ChecksumFlags, Ipv4Packet, Ipv4PacketMut, MutableIpv4Packet},
     nat::NatTable,
     plugins::{WanCallback, WanPluginConfig},
     protocols::{NET_PROTOCOL_TCP, NET_PROTOCOL_UDP},
@@ -346,7 +346,7 @@ fn handle_event(
 
                         tracing::trace!("read ipv4 packet: {pkt:?}");
                         if let Some(ip) = nat.get(&pkt) {
-                            pkt.unmasquerade(ip, false);
+                            pkt.unmasquerade(ip, ChecksumFlags::Full);
                         }
 
                         callback.exec(wan_id, &buffer);
@@ -362,7 +362,7 @@ fn handle_event(
                     TunTapMessage::Data(mut pkt) => {
                         let mut ipv4 = Ipv4PacketMut::new(&mut pkt)?;
                         nat.insert(&ipv4);
-                        ipv4.masquerade(ip, true);
+                        ipv4.masquerade(ip, ChecksumFlags::Partial);
 
                         tracing::trace!("wrote ipv4 packet: {ipv4:?}");
                         let sz = match ty {
