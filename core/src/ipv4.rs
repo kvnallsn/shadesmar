@@ -9,7 +9,7 @@ use bitflags::bitflags;
 use rand::Rng;
 
 use crate::{
-    cast, ph_checksum,
+    cast,
     protocols::{NET_PROTOCOL_TCP, NET_PROTOCOL_UDP},
     types::buffers::{PacketBuffer, PacketBufferPool},
     ProtocolError,
@@ -184,7 +184,7 @@ pub trait Ipv4Packet {
         pkt[12..16].copy_from_slice(&self.dst().octets());
         pkt[16..20].copy_from_slice(&self.src().octets());
 
-        let csum = crate::checksum(&pkt[0..20]);
+        let csum = crate::csum::checksum(&pkt[0..20]);
         pkt[10..12].copy_from_slice(&csum.to_be_bytes());
 
         Ok(self.src())
@@ -240,13 +240,10 @@ pub trait MutableIpv4Packet: Ipv4Packet {
         let b = self.as_mut();
 
         b[10..12].copy_from_slice(&[0x00, 0x00]);
-        let csum = crate::checksum(&b[0..20]);
+        let csum = crate::csum::checksum(&b[0..20]);
         b[10..12].copy_from_slice(&csum.to_be_bytes());
 
-        match offload {
-            true => self.compute_partial_ph_checksum(),
-            false => self.fix_transport_checksum(),
-        }
+        self.fix_transport_checksum(offload);
     }
 
     /// Clears the flags iset on this packet
@@ -264,7 +261,7 @@ pub trait MutableIpv4Packet: Ipv4Packet {
 
     /// TCP and UDP both use a pseudo-ip header in their checksum fields
     /// so we'll need to update the TCP/UDP checksum (if necessary)
-    fn fix_transport_checksum(&mut self) {
+    fn fix_transport_checksum(&mut self, partial: bool) {
         let src = self.src();
         let dst = self.dst();
         let proto = self.protocol();
@@ -280,38 +277,10 @@ pub trait MutableIpv4Packet: Ipv4Packet {
         };
 
         payload[s..e].copy_from_slice(&[0, 0]);
-        let sum = ph_checksum(src, dst, proto, payload);
-        payload[s..e].copy_from_slice(&sum.to_be_bytes());
-    }
-
-    fn compute_partial_ph_checksum(&mut self) {
-        let src = self.src();
-        let dst = self.dst();
-        let proto = self.protocol();
-        let payload = self.payload_mut();
-
-        let (s, e) = match proto {
-            NET_PROTOCOL_TCP => (16, 18),
-            NET_PROTOCOL_UDP => (6, 8),
-            _ => {
-                // no need to fixup anything
-                return;
-            }
+        let sum = match partial {
+            true => crate::csum::ph_partial_checksum(src, dst, proto, payload),
+            false => crate::csum::ph_full_checksum(src, dst, proto, payload),
         };
-
-        let mut sum = 0;
-        let ip = src.octets();
-        sum += u32::from_be_bytes([0x00, 0x00, ip[2], ip[3]]);
-        sum += u32::from_be_bytes([0x00, 0x00, ip[0], ip[1]]);
-        let ip = dst.octets();
-        sum += u32::from_be_bytes([0x00, 0x00, ip[2], ip[3]]);
-        sum += u32::from_be_bytes([0x00, 0x00, ip[0], ip[1]]);
-        sum += u32::from(proto);
-
-        let len = payload.len();
-        sum += len as u32;
-        let sum = ((sum & 0xFFFF) + ((sum >> 16) & 0xFFFF)) as u16;
-
         payload[s..e].copy_from_slice(&sum.to_be_bytes());
     }
 }

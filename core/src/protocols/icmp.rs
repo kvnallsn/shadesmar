@@ -1,7 +1,6 @@
 //! ICMP related structures
 
 use crate::{
-    checksum,
     ipv4::{Ipv4Packet, Ipv4PacketOwned},
     ProtocolError,
 };
@@ -140,7 +139,7 @@ impl IcmpPacket {
                 buf[6..8].copy_from_slice(&seq.to_be_bytes());
                 buf[8..end].copy_from_slice(&data);
 
-                let csum = checksum(&buf[0..end]);
+                let csum = crate::csum::checksum(&buf[0..end]);
                 buf[2..4].copy_from_slice(&csum.to_be_bytes());
                 end
             }
@@ -153,7 +152,7 @@ impl IcmpPacket {
                 buf[6..8].copy_from_slice(&seq.to_be_bytes());
                 buf[8..end].copy_from_slice(&data);
 
-                let csum = checksum(&buf[0..end]);
+                let csum = crate::csum::checksum(&buf[0..end]);
                 buf[2..4].copy_from_slice(&csum.to_be_bytes());
                 end
             }
@@ -164,7 +163,7 @@ impl IcmpPacket {
                 buf[2..8].copy_from_slice(&[0, 0, 0, 0, 0, 0]);
                 buf[8..36].copy_from_slice(data.as_slice());
 
-                let csum = checksum(&buf[0..36]);
+                let csum = crate::csum::checksum(&buf[0..36]);
                 buf[2..4].copy_from_slice(&csum.to_be_bytes());
                 36
             }

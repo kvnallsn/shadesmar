@@ -1,7 +1,7 @@
 //! ICMP Protocol Handler
 
 use shadesmar_core::{
-    checksum,
+    csum::checksum,
     ipv4::{Ipv4Packet, Ipv4PacketOwned},
     protocols::{
         icmp::{ICMP_HDR_SZ, ICMP_TY_ECHO_REPLY, ICMP_TY_ECHO_REQUEST},
