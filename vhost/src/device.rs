@@ -64,10 +64,10 @@ const VHOST_USER_GET_STATUS: u32 = 40;
 
 // virtio-net features
 // https://docs.oasis-open.org/virtio/virtio/v1.1/cs01/virtio-v1.1-cs01.html#x1-1940001
-/// Device handles packets with partial checksum. This “checksum offload” is a common feature on modern network cards.
-//const VIRTIO_NET_F_CSUM: u64 = 0x0001;
+/// Device (host) handles packets with partial checksum. This “checksum offload” is a common feature on modern network cards.
+const VIRTIO_NET_F_CSUM: u64 = 0x0001;
 
-/// Driver handles packets with partial checksum.
+/// Driver (guest) handles packets with partial checksum.
 const _VIRTIO_NET_F_GUEST_CSUM: u64 = 0x0002;
 
 /// Control channel offloads reconfiguration support.
@@ -388,6 +388,8 @@ impl<S: Switch + 'static> VirtioDevice<S> {
     }
 
     fn parse_msg(&mut self, strm: RawFd, mut hdr: VHostHeader) -> AppResult<()> {
+        let _span = tracing::info_span!("parse vhost-user message").entered();
+
         if hdr.ack_required() {
             tracing::trace!(ty = hdr.ty, "ack required");
         }
@@ -402,7 +404,8 @@ impl<S: Switch + 'static> VirtioDevice<S> {
                 // Feature bit VHOST_USER_F_PROTOCOL_FEATURES signals back-end support for
                 // VHOST_USER_GET_PROTOCOL_FEATURES and VHOST_USER_SET_PROTOCOL_FEATURES.
                 let payload = VirtioFeatures::RING_VERSION_1 | VirtioFeatures::PROTOCOL_FEATURES;
-                let payload = payload.bits() | VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS;
+                let payload =
+                    payload.bits() | VIRTIO_NET_F_CSUM | VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS;
                 tracing::trace!("[get-features] sending virtio features: 0x{:08x}", payload);
                 self.send_response(strm, hdr.ty, &payload.to_le_bytes())?;
             }
@@ -429,7 +432,8 @@ impl<S: Switch + 'static> VirtioDevice<S> {
                 //
                 // **Back-ends that report VHOST_USER_F_PROTOCOL_FEATURES must support this message
                 // even before VHOST_USER_SET_FEATURES was called.**
-                let payload = VHostUserProtocolFeature::BACKEND_REQ
+                let payload = VHostUserProtocolFeature::empty()
+                    | VHostUserProtocolFeature::BACKEND_REQ
                     | VHostUserProtocolFeature::CONFIG
                     | VHostUserProtocolFeature::RESET_DEVICE
                     | VHostUserProtocolFeature::DEVICE_STATE
