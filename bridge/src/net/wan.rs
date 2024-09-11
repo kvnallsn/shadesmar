@@ -1,10 +1,5 @@
 //! Various WAN providers
 
-//mod blackhole;
-//mod tap;
-//mod udp;
-//mod wireguard;
-
 use std::{
     ffi::c_void,
     net::Ipv4Addr,
