@@ -2,14 +2,9 @@
 
 use std::{
     fmt::{Debug, Display},
-    os::fd::AsRawFd,
     str::FromStr,
 };
 
-use nix::{
-    libc::{IFNAMSIZ, SIOCGIFHWADDR},
-    sys::socket::SockFlag,
-};
 use rand::RngCore;
 use serde::{de::Visitor, Deserialize, Serialize};
 
@@ -43,7 +38,14 @@ impl MacAddress {
     ///
     /// ### Arguments
     /// * `name` - Name of the ethernet inferface (i.e., eth0, ens18)
+    #[cfg(target_family = "unix")]
     pub fn from_interface(name: &str) -> Result<Self, ProtocolError> {
+        use nix::{
+            libc::{IFNAMSIZ, SIOCGIFHWADDR},
+            sys::socket::SockFlag,
+        };
+        use std::os::fd::AsRawFd;
+
         // #define SIOCGIFHWADDR 0x8927
         nix::ioctl_read_bad!(siocgifhwaddr, SIOCGIFHWADDR, nix::libc::ifreq);
 
